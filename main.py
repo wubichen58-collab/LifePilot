@@ -15,8 +15,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -140,28 +141,39 @@ def get_history(user_id: int, limit: int = 10) -> list:
     conn.close()
     return [{"role": r, "parts": [{"text": c}]} for r, c in reversed(rows)]
 
-# ─── GEMINI ──────────────────────────────────────────────────────────────────
+# ─── GROQ ────────────────────────────────────────────────────────────────────
 
 async def ask_gemini(system_prompt: str, user_message: str, history: list = None) -> str:
-    contents = []
+    messages = [{"role": "system", "content": system_prompt}]
     if history:
-        contents.extend(history)
-    contents.append({"role": "user", "parts": [{"text": user_message}]})
+        for item in history:
+            role = item["role"]
+            text = item["parts"][0]["text"]
+            if role == "model":
+                role = "assistant"
+            messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": user_message})
 
     payload = {
-        "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": contents,
-        "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.8}
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "max_tokens": 1024,
+        "temperature": 0.8
+    }
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(GEMINI_URL, json=payload) as resp:
+        async with session.post(GROQ_URL, json=payload, headers=headers) as resp:
             data = await resp.json()
             try:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
+                return data["choices"][0]["message"]["content"]
             except Exception:
-                logger.error(f"Gemini error: {data}")
-                return "Ошибка при обращении к Gemini. Попробуй ещё раз."
+                logger.error(f"Groq error: {data}")
+                return "Ошибка при обращении к AI. Попробуй ещё раз."
 
 def build_system_prompt(profile: dict) -> str:
     now = datetime.now()
