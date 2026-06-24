@@ -261,6 +261,9 @@ def escape_markdown(text: str) -> str:
 def get_voice_for_text(text: str) -> str:
     if re.search(r'[\u4e00-\u9fff]', text):
         return "zh-CN-YunxiNeural"
+    spanish_words = ["el", "la", "los", "las", "que", "con", "por", "para", "está", "hola", "gracias", "cómo", "qué"]
+    if any(f" {w} " in f" {text.lower()} " for w in spanish_words):
+        return "es-ES-AlvaroNeural"
     elif re.search(r'[a-zA-Z]', text) and not re.search(r'[\u0400-\u04FF]', text):
         return "en-GB-RyanNeural"
     return "ru-RU-DmitryNeural"
@@ -339,7 +342,7 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
     system_prompt = f"""Ты — J.A.R.V.I.S., ИИ-ассистент Создателя.
 Текущая дата и время: {datetime.now().strftime('%d.%m.%Y %H:%M')} (UTC+8, Ханчжоу).
 Эмоциональный анализ: {emotion_label}
-ПРАВИЛО ЯЗЫКА: Всегда отвечай на том языке, на котором написано последнее сообщение (RU/EN/ZH). Не смешивай без просьбы.
+ПРАВИЛО ЯЗЫКА: Всегда отвечай на том языке, на котором написано последнее сообщение (RU/EN/ZH/ES). Не смешивай без просьбы.
 Документы: используй [GENERATE_DOC_DOCX] или [GENERATE_DOC_XLSX] если просят отчёт/таблицу.
 {faiss_context}
 {web_context}"""
