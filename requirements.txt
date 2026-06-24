@@ -1,9 +1,14 @@
 aiogram
 edge-tts
 aiohttp
-textblob
-scikit-learn
 apscheduler
 python-docx
 openpyxl
 pypdf
+transformers
+torch
+sentence-transformers
+faiss-cpu
+deepface
+tf-keras
+numpy
