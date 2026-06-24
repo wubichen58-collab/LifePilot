@@ -11,3 +11,4 @@ sentence-transformers
 faiss-cpu
 numpy
 opencv-python-headless
+pyncm
