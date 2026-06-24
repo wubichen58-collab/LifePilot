@@ -51,7 +51,6 @@ emotion_classifier = pipeline(
     top_k=None,
     device=-1
 )
-)
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 EMBED_DIM = 384
