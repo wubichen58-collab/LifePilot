@@ -47,9 +47,10 @@ logger.info("Загрузка ML-моделей...")
 
 emotion_classifier = pipeline(
     "text-classification",
-    model="j-hartmann/emotion-english-distilroberta-base",
+    model="bhadresh-savani/distilbert-base-uncased-emotion",
     top_k=None,
     device=-1
+)
 )
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
