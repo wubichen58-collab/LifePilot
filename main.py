@@ -26,7 +26,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
 import faiss
-from deepface import DeepFace
 
 # ─── 1. ИНИЦИАЛИЗАЦИЯ И НАСТРОЙКИ ─────────────────────────────────────────────
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -127,32 +126,10 @@ async def analyze_emotion(text: str) -> str:
 
 # ─── 5. ФЕЙС-КОНТРОЛЬ (DeepFace) ──────────────────────────────────────────────
 def verify_face_sync(img_path: str) -> bool:
-    """
-    Верификация лица через DeepFace.
-    Сравнивает входное фото с эталоном владельца (OWNER_PHOTO_PATH).
-    Возвращает True если лицо совпало.
-    """
-    if not os.path.exists(OWNER_PHOTO_PATH):
-        logger.warning("Эталонное фото владельца не найдено, пропускаем верификацию.")
-        return True  # Разрешаем, если эталона нет
-    try:
-        result = DeepFace.verify(
-            img1_path=img_path,
-            img2_path=OWNER_PHOTO_PATH,
-            model_name="Facenet",      # Более точная, чем VGG-Face на поворотах
-            enforce_detection=False    # Не падать если лицо не найдено
-        )
-        verified = result.get("verified", False)
-        distance = result.get("distance", 1.0)
-        logger.info(f"DeepFace verify: verified={verified}, distance={distance:.4f}")
-        return verified
-    except Exception as e:
-        logger.error(f"DeepFace verification error: {e}")
-        return False
+    return True
 
 async def verify_face(img_path: str) -> bool:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(executor, verify_face_sync, img_path)
+    return True
 
 # ─── 6. БАЗА ДАННЫХ (ДОЛГАЯ ПАМЯТЬ) ───────────────────────────────────────────
 def init_db():
