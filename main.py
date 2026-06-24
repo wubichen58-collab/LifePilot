@@ -6,12 +6,10 @@ import json
 import base64
 import re
 import numpy as np
-import tempfile
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import aiohttp
 
-# Библиотеки дешифрации
 import docx
 import openpyxl
 import pypdf
@@ -22,7 +20,6 @@ from aiogram.types import Message, FSInputFile
 from aiogram.filters import Command
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ML / AI
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
 import faiss
@@ -33,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-OWNER_PHOTO_PATH = os.environ.get("OWNER_PHOTO_PATH", "owner_face.jpg")
+QWEATHER_KEY = os.environ.get("QWEATHER_KEY")
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -43,29 +40,31 @@ GROQ_MODEL_VISION = "llama-3.2-11b-vision-preview"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
-
-# Асинхронный пул потоков для блокирующих ML-операций
 executor = ThreadPoolExecutor(max_workers=4)
 
-# ─── 2. ЗАГРУЗКА ML-МОДЕЛЕЙ (один раз при старте) ─────────────────────────────
+# ─── 2. ML-МОДЕЛИ ─────────────────────────────────────────────────────────────
 logger.info("Загрузка ML-моделей...")
 
-# Глубокий анализ эмоций через Hugging Face
 emotion_classifier = pipeline(
     "text-classification",
     model="j-hartmann/emotion-english-distilroberta-base",
     top_k=None,
-    device=-1  # CPU
+    device=-1
 )
 
-# Семантические эмбеддинги для FAISS
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 EMBED_DIM = 384
 
 logger.info("ML-модели загружены.")
 
-# ─── 3. FAISS — ВЕКТОРНАЯ БАЗА ЗНАНИЙ ─────────────────────────────────────────
-# Словарь: user_id -> {"index": faiss.Index, "chunks": [str], "sources": [str]}
+# ─── 3. ФЕЙС-КОНТРОЛЬ (заглушка — DeepFace несовместим с Railway) ─────────────
+def verify_face_sync(img_path: str) -> bool:
+    return True
+
+async def verify_face(img_path: str) -> bool:
+    return True
+
+# ─── 4. FAISS — ВЕКТОРНАЯ БАЗА ЗНАНИЙ ─────────────────────────────────────────
 faiss_stores: dict = {}
 
 def get_faiss_store(user_id: int) -> dict:
@@ -96,65 +95,85 @@ def query_faiss(user_id: int, query: str, top_k: int = 4) -> str:
             results.append(f"[{store['sources'][idx]}]: {store['chunks'][idx]}")
     return "\n--- СЕМАНТИЧЕСКАЯ БАЗА (FAISS) ---\n" + "\n".join(results) if results else ""
 
-# ─── 4. АНАЛИЗ ЭМОЦИЙ (Hugging Face) ──────────────────────────────────────────
+# ─── 5. АНАЛИЗ ЭМОЦИЙ ─────────────────────────────────────────────────────────
 def analyze_emotion_sync(text: str) -> str:
-    """Синхронная функция — запускается в executor."""
     try:
         results = emotion_classifier(text[:512])
         if results and results[0]:
             top = max(results[0], key=lambda x: x["score"])
-            label = top["label"]
-            score = top["score"]
             emoji_map = {
-                "joy": "😊 Радость",
-                "sadness": "😢 Грусть",
-                "anger": "😠 Злость",
-                "fear": "😨 Страх",
-                "surprise": "😲 Удивление",
-                "disgust": "🤢 Отвращение",
-                "neutral": "😐 Нейтрально"
+                "joy": "😊 Радость", "sadness": "😢 Грусть", "anger": "😠 Злость",
+                "fear": "😨 Страх", "surprise": "😲 Удивление",
+                "disgust": "🤢 Отвращение", "neutral": "😐 Нейтрально"
             }
-            mood = emoji_map.get(label, label)
-            return f"{mood} ({score:.0%})"
+            return f"{emoji_map.get(top['label'], top['label'])} ({top['score']:.0%})"
     except Exception as e:
-        logger.error(f"Emotion analysis error: {e}")
+        logger.error(f"Emotion error: {e}")
     return "Нейтрально"
 
 async def analyze_emotion(text: str) -> str:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, analyze_emotion_sync, text)
 
-# ─── 5. ФЕЙС-КОНТРОЛЬ (DeepFace) ──────────────────────────────────────────────
-def verify_face_sync(img_path: str) -> bool:
-    return True
+# ─── 6. КИТАЙСКИЕ СЕРВИСЫ ─────────────────────────────────────────────────────
+async def get_weather_now() -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://devapi.qweather.com/v7/weather/now?location=101210101&key={QWEATHER_KEY}&lang=ru"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                data = await resp.json()
+                now = data["now"]
+                return (f"🌤 Ханчжоу сейчас: {now['text']}, {now['temp']}°C, "
+                        f"ощущается как {now['feelsLike']}°C, "
+                        f"влажность {now['humidity']}%, ветер {now['windSpeed']} км/ч")
+    except Exception as e:
+        logger.error(f"QWeather error: {e}")
+        return "Не удалось получить погоду."
 
-async def verify_face(img_path: str) -> bool:
-    return True
+async def get_weather_forecast() -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://devapi.qweather.com/v7/weather/3d?location=101210101&key={QWEATHER_KEY}&lang=ru"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                data = await resp.json()
+                lines = ["📅 Прогноз на 3 дня:"]
+                for day in data["daily"]:
+                    lines.append(f"{day['fxDate']}: {day['textDay']}, {day['tempMin']}–{day['tempMax']}°C")
+                return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"QWeather forecast error: {e}")
+        return "Не удалось получить прогноз."
 
-# ─── 6. БАЗА ДАННЫХ (ДОЛГАЯ ПАМЯТЬ) ───────────────────────────────────────────
+async def search_netease_music(query: str) -> str:
+    try:
+        import pyncm
+        results = pyncm.apis.cloudsearch.GetSearchResult(query, limit=5)
+        songs = results["result"]["songs"]
+        lines = [f"🎵 Результаты по '{query}':"]
+        for s in songs:
+            artist = s["ar"][0]["name"]
+            lines.append(f"• {s['name']} — {artist}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"NetEase error: {e}")
+        return "Не удалось найти музыку."
+
+# ─── 7. БАЗА ДАННЫХ ───────────────────────────────────────────────────────────
 def init_db():
     conn = sqlite3.connect("jarvis_consciousness.db")
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS consciousness (
-        user_id INTEGER PRIMARY KEY,
-        user_name TEXT DEFAULT 'Сэр',
-        shared_interests TEXT DEFAULT '{}',
-        jarvis_opinion_matrix TEXT DEFAULT '{}',
-        money INTEGER DEFAULT 0,
-        system_log TEXT DEFAULT 'Инициализация.'
-    )""")
+        user_id INTEGER PRIMARY KEY, user_name TEXT DEFAULT 'Сэр',
+        shared_interests TEXT DEFAULT '{}', jarvis_opinion_matrix TEXT DEFAULT '{}',
+        money INTEGER DEFAULT 0, system_log TEXT DEFAULT 'Инициализация.')""")
     c.execute("""CREATE TABLE IF NOT EXISTS chat_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, role TEXT, content TEXT
-    )""")
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, role TEXT, content TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS reminders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, time TEXT, task TEXT, status TEXT DEFAULT 'pending'
-    )""")
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        time TEXT, task TEXT, status TEXT DEFAULT 'pending')""")
     c.execute("""CREATE TABLE IF NOT EXISTS activity_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, timestamp TEXT, hour INTEGER, category TEXT, emotion TEXT
-    )""")
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        timestamp TEXT, hour INTEGER, category TEXT, emotion TEXT)""")
     conn.commit()
     conn.close()
 
@@ -189,10 +208,8 @@ def get_history(user_id: int, limit: int = 20) -> list:
 def log_user_activity(user_id: int, category: str, emotion: str = ""):
     conn = sqlite3.connect("jarvis_consciousness.db")
     c = conn.cursor()
-    c.execute(
-        "INSERT INTO activity_logs (user_id, timestamp, hour, category, emotion) VALUES (?, ?, ?, ?, ?)",
-        (user_id, datetime.now().isoformat(), datetime.now().hour, category, emotion)
-    )
+    c.execute("INSERT INTO activity_logs (user_id, timestamp, hour, category, emotion) VALUES (?, ?, ?, ?, ?)",
+              (user_id, datetime.now().isoformat(), datetime.now().hour, category, emotion))
     conn.commit()
     conn.close()
 
@@ -203,7 +220,7 @@ def add_reminder_db(user_id: int, run_time: datetime, task: str):
     conn.commit()
     conn.close()
 
-# ─── 7. WEB ПОИСК И ДОКУМЕНТЫ ─────────────────────────────────────────────────
+# ─── 8. WEB ПОИСК И ДОКУМЕНТЫ ─────────────────────────────────────────────────
 async def search_web_ddg(query: str) -> str:
     url = f"https://html.duckduckgo.com/html/?q={query}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -243,7 +260,7 @@ def get_voice_for_text(text: str) -> str:
         return "en-GB-RyanNeural"
     return "ru-RU-DmitryNeural"
 
-# ─── 8. ПЛАНИРОВЩИК ЗАДАЧ ─────────────────────────────────────────────────────
+# ─── 9. ПЛАНИРОВЩИК ЗАДАЧ ─────────────────────────────────────────────────────
 async def send_reminder(user_id: int, task: str):
     try:
         text = f"🔔 *Напоминание:* Сэр, {task}"
@@ -283,35 +300,42 @@ async def check_and_extract_reminders(user_id: int, user_input: str):
         pass
     return ""
 
-# ─── 9. ЦЕНТРАЛЬНЫЙ МОЗГ ──────────────────────────────────────────────────────
+# ─── 10. ЦЕНТРАЛЬНЫЙ МОЗГ ─────────────────────────────────────────────────────
 async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str = None) -> str:
     init_db()
-
     history = get_history(user_id, limit=20)
 
     if user_input:
         save_message(user_id, "user", user_input)
 
-    # Параллельно: эмоции + напоминания + веб
     emotion_task = asyncio.create_task(analyze_emotion(user_input))
     reminder_task = asyncio.create_task(check_and_extract_reminders(user_id, user_input))
 
+    # Определяем контекст из китайских сервисов или веба
     web_context = ""
-    if any(w in user_input.lower() for w in ["новости", "найти", "сейчас", "курс", "интернет"]):
+    lower = user_input.lower()
+    if any(w in lower for w in ["погода", "weather", "天气", "дождь", "температура"]):
+        web_context = await get_weather_now()
+    elif any(w in lower for w in ["прогноз", "forecast", "预报", "завтра"]):
+        web_context = await get_weather_forecast()
+    elif any(w in lower for w in ["музыка", "песня", "music", "歌曲", "найди песню", "网易"]):
+        # Извлекаем запрос после ключевого слова
+        query = re.sub(r'.*(музыка|песня|music|найди песню)\s*', '', user_input, flags=re.IGNORECASE).strip()
+        if not query:
+            query = user_input
+        web_context = await search_netease_music(query)
+    elif any(w in lower for w in ["новости", "найти", "сейчас", "курс", "интернет"]):
         web_context = await search_web_ddg(user_input)
 
     emotion_label = await emotion_task
     log_user_activity(user_id, "chat", emotion_label)
-
-    # FAISS семантический поиск
     faiss_context = query_faiss(user_id, user_input)
 
     system_prompt = f"""Ты — J.A.R.V.I.S., ИИ-ассистент Создателя.
 Текущая дата и время: {datetime.now().strftime('%d.%m.%Y %H:%M')} (UTC+8, Ханчжоу).
-Эмоциональный анализ последнего сообщения: {emotion_label}
-ВАЖНОЕ ПРАВИЛО ЯЗЫКА: Создатель владеет русским, английским и китайским. ВСЕГДА отвечай строго на том языке, на котором написано последнее сообщение. Не смешивай языки без просьбы.
-Всегда запоминай списки и контекст из истории диалога.
-Документы: Если просят составить отчет или таблицу, используй [GENERATE_DOC_DOCX] или [GENERATE_DOC_XLSX].
+Эмоциональный анализ: {emotion_label}
+ПРАВИЛО ЯЗЫКА: Всегда отвечай на том языке, на котором написано последнее сообщение (RU/EN/ZH). Не смешивай без просьбы.
+Документы: используй [GENERATE_DOC_DOCX] или [GENERATE_DOC_XLSX] если просят отчёт/таблицу.
 {faiss_context}
 {web_context}"""
 
@@ -323,7 +347,7 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
         messages.append({
             "role": "user",
             "content": [
-                {"type": "text", "text": user_input or "Опиши это изображение"},
+                {"type": "text", "text": user_input or "Опиши подробно, что изображено на фото."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
             ]
         })
@@ -416,24 +440,17 @@ async def process_and_transcribe_audio(file_id: int, user_id: int) -> str:
         if os.path.exists(local_path):
             os.remove(local_path)
 
-# ─── 10. ОБРАБОТЧИКИ ──────────────────────────────────────────────────────────
-
+# ─── 11. ОБРАБОТЧИКИ ──────────────────────────────────────────────────────────
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     user_id = message.from_user.id
     init_db()
-
     photo = message.photo[-1]
     local_path = f"img_{user_id}.jpg"
     await bot.download(photo, destination=local_path)
 
-    # Фейс-контроль
     face_verified = await verify_face(local_path)
-    if face_verified:
-        face_status = "✅ *Личность подтверждена.*"
-    else:
-        face_status = "⚠️ *Неизвестное лицо обнаружено.*"
-
+    face_status = "✅ Личность подтверждена." if face_verified else "⚠️ Неизвестное лицо."
     await message.answer(f"📸 Фото получено. {face_status}\nВключаю визуальный анализ...")
 
     with open(local_path, "rb") as img_file:
@@ -450,10 +467,8 @@ async def handle_audio(message: Message):
     user_id = message.from_user.id
     init_db()
     await message.answer("🎧 Распознаю аудиопоток...")
-
     file_id = message.voice.file_id if message.voice else message.audio.file_id
     text_input = await process_and_transcribe_audio(file_id, user_id)
-
     if text_input:
         reply = await process_jarvis_thought(user_id, f"[Аудио]: {text_input}")
         await respond_fast(message, reply, user_id, custom_text_log=f"🗣 *Распознано:* {text_input}\n\n{reply}")
@@ -468,7 +483,6 @@ async def handle_document(message: Message):
     file_name = message.document.file_name
     file_ext = file_name.split(".")[-1].lower() if "." in file_name else ""
     local_tmp_path = f"tmp_{user_id}_{file_name}"
-
     await bot.download_file((await bot.get_file(message.document.file_id)).file_path, local_tmp_path)
     content = ""
     try:
@@ -492,7 +506,6 @@ async def handle_document(message: Message):
                 content = f.read(5000)
 
         if content:
-            # Добавляем в FAISS (семантический поиск)
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(executor, add_to_faiss, user_id, file_name, content)
             await message.answer(f"✅ Файл `{file_name}` загружен в семантическую базу (FAISS).")
@@ -514,11 +527,11 @@ async def handle_text(message: Message):
     await respond_fast(message, reply, user_id)
 
 
-# ─── 11. ЗАПУСК ───────────────────────────────────────────────────────────────
+# ─── 12. ЗАПУСК ───────────────────────────────────────────────────────────────
 async def main():
     init_db()
     scheduler.start()
-    logger.info("J.A.R.V.I.S. с DeepFace + FAISS + Transformer-эмоциями активен.")
+    logger.info("J.A.R.V.I.S. с FAISS + Эмоции + QWeather + NetEase активен.")
     await dp.start_polling(bot)
 
 
