@@ -33,7 +33,6 @@ GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL_TEXT = "llama-3.3-70b-versatile"
 GROQ_MODEL_VISION = "llama-3.2-11b-vision-preview"
-JARVIS_VOICE = "ru-RU-DmitryNeural" 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -130,7 +129,7 @@ def add_reminder_db(user_id: int, run_time: datetime, task: str):
     conn.commit()
     conn.close()
 
-# ─── 4. WEB ПОИСК И ДОКУМЕНТЫ ─────────────────────────────────────────────────
+# ─── 4. WEB ПОИСК, ДОКУМЕНТЫ И УТИЛИТЫ ────────────────────────────────────────
 async def search_web_ddg(query: str) -> str:
     url = f"https://html.duckduckgo.com/html/?q={query}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -160,13 +159,25 @@ def create_xlsx_report(table_data: list, filename: str):
 def escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
+def get_voice_for_text(text: str) -> str:
+    """Анализирует текст и выбирает подходящий голос (RU, EN, ZH)"""
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return "zh-CN-YunxiNeural" # Мужской китайский голос
+    elif re.search(r'[a-zA-Z]', text) and not re.search(r'[\u0400-\u04FF]', text):
+        return "en-GB-RyanNeural" # Британский английский голос
+    else:
+        return "ru-RU-DmitryNeural" # По умолчанию русский
+
 # ─── 5. ПЛАНИРОВЩИК ЗАДАЧ ─────────────────────────────────────────────────────
 async def send_reminder(user_id: int, task: str):
     try:
         text = f"🔔 *Напоминание:* Сэр, {task}"
         await bot.send_message(chat_id=user_id, text=escape_markdown(text), parse_mode="MarkdownV2")
         voice_path = f"remind_{user_id}.ogg"
-        await edge_tts.Communicate(f"Сэр, напоминаю: {task}", JARVIS_VOICE).save(voice_path)
+        
+        dynamic_voice = get_voice_for_text(task)
+        await edge_tts.Communicate(f"Сэр, напоминаю: {task}", dynamic_voice).save(voice_path)
+        
         if os.path.exists(voice_path):
             await bot.send_voice(chat_id=user_id, voice=FSInputFile(voice_path))
             os.remove(voice_path)
@@ -196,14 +207,14 @@ async def check_and_extract_reminders(user_id: int, user_input: str):
     except: pass
     return ""
 
-# ─── 6. ЦЕНТРАЛЬНЫЙ МОЗГ (LLM + ДОЛГАЯ ПАМЯТЬ) ────────────────────────────────
+# ─── 6. ЦЕНТРАЛЬНЫЙ МОЗГ (LLM + ДОЛГАЯ ПАМЯТЬ + ПОЛИГЛОТ) ─────────────────────
 async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str = None) -> str:
     init_db()
     
-    # 1. Сначала достаем ИСТОРИЮ (до сохранения текущего сообщения, чтобы избежать дублей)
+    # 1. Достаем ИСТОРИЮ до сохранения текущего сообщения
     history = get_history(user_id, limit=20)
     
-    # 2. Сохраняем текущий запрос пользователя в долговременную память
+    # 2. Сохраняем запрос
     if user_input:
         save_message(user_id, "user", user_input)
 
@@ -218,19 +229,18 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
         
     system_prompt = f"""Ты — J.A.R.V.I.S., ИИ-ассистент Создателя.
 Атмосфера: {ml_context}. Отвечай структурировано, без лишних вступлений.
+ВАЖНОЕ ПРАВИЛО ЯЗЫКА: Создатель владеет русским, английским и китайским. Твоя задача — ВСЕГДА отвечать строго на том языке, на котором Создатель написал или произнес последнее сообщение. Не смешивай языки без просьбы.
 Всегда запоминай списки и контекст из истории диалога.
 Документы: Если просят составить отчет или таблицу, используй [GENERATE_DOC_DOCX] или [GENERATE_DOC_XLSX]."""
 
     full_system_instruction = f"{system_prompt}\n{rag_context}\n{web_context}"
     
-    # 3. Формируем контекст для API
+    # 3. Формируем контекст
     messages = [{"role": "system", "content": full_system_instruction}]
     
-    # Добавляем историю (это обеспечивает долгую память)
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
         
-    # Добавляем текущий запрос (с картинкой, если есть)
     if image_b64:
         messages.append({
             "role": "user", 
@@ -256,7 +266,7 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
                 data = await resp.json()
                 if "choices" in data:
                     reply = data["choices"][0]["message"]["content"]
-                    # 4. Сохраняем ответ Джарвиса в долговременную память
+                    # 4. Сохраняем ответ Джарвиса
                     save_message(user_id, "assistant", reply)
                     return reply + await reminder_task
                 else:
@@ -299,7 +309,9 @@ async def respond_fast(message: Message, text_reply: str, user_id: int, custom_t
         
     async def generate_and_send_voice():
         try:
-            await edge_tts.Communicate(text_reply.replace("*","").replace("_",""), JARVIS_VOICE).save(voice_path)
+            # Выбор диктора в зависимости от языка ответа
+            dynamic_voice = get_voice_for_text(text_reply)
+            await edge_tts.Communicate(text_reply.replace("*","").replace("_",""), dynamic_voice).save(voice_path)
             if os.path.exists(voice_path) and os.path.getsize(voice_path) > 0:
                 await message.answer_voice(voice=FSInputFile(voice_path))
                 os.remove(voice_path)
@@ -315,7 +327,7 @@ async def process_and_transcribe_audio(file_id: int, user_id: int) -> str:
         data = aiohttp.FormData()
         data.add_field("file", open(local_path, "rb"), filename="voice.ogg")
         data.add_field("model", "whisper-large-v3")
-        data.add_field("language", "ru")
+        # Убрана привязка к русскому языку — теперь Whisper автоматически распознает RU/EN/ZH
         
         async with aiohttp.ClientSession() as session:
             async with session.post(GROQ_AUDIO_URL, data=data, headers=headers) as resp:
@@ -409,7 +421,7 @@ async def handle_text(message: Message):
 async def main():
     init_db()
     scheduler.start()
-    logger.info("Ультимативный мультиформатный Джарвис активен.")
+    logger.info("Ультимативный мультиформатный мультиязычный Джарвис активен.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
