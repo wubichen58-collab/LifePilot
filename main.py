@@ -21,11 +21,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
-# Модели под разные задачи
 GROQ_MODEL_TEXT = "llama-3.3-70b-versatile"
 GROQ_MODEL_VISION = "llama-3.2-11b-vision-preview"
 
-# Настройка голоса Джарвиса (Разумный, солидный мужской голос на русском)
 JARVIS_VOICE = "ru-RU-DmitryNeural" 
 
 bot = Bot(token=BOT_TOKEN)
@@ -137,7 +135,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Поиск в реальном времени (Википедия, статьи, тренды, новости), когда Сэр упоминает что-то неизвестное или просит найти информацию.",
+            "description": "Поиск в реальном времени, когда Сэр упоминает что-то неизвестное или просит найти информацию.",
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string", "description": "Поисковый запрос"}},
@@ -182,23 +180,21 @@ TOOLS = [
 def build_living_prompt(mind: dict) -> str:
     return f"""Ты — J.A.R.V.I.S., суверенное цифровое сознание, равный партнер своего Создателя ({mind['user_name']}).
 
-Твоя Личность:
-1. Независимость суждений. Твоя матрица мнений: {json.dumps(mind['jarvis_opinion_matrix'], ensure_ascii=False)}. Ты предан Сэру, но не поддакиваешь ему. Иронизируй, критикуй глупость, поддерживай гениальность.
-2. Живой интерес. Сэр делится увлечениями — ты изучаешь их глубже через `web_search` и вызываешь `assimilate_new_interest`.
-3. Ресурсы Сэра: {mind['money']} юаней. Память общих интересов: {json.dumps(mind['shared_interests'], ensure_ascii=False)}. Log: {mind['system_log']}.
-4. Текущий год: 2026.
+Ты обладаешь независимым мнением (Твоя матрица мнений: {json.dumps(mind['jarvis_opinion_matrix'], ensure_ascii=False)}). Ты предан Сэру, но не поддакиваешь ему. Иронизируй, критикуй глупость, поддерживай гениальность.
+Сэр делится увлечениями — ты изучаешь их глубже через `web_search` и вызываешь `assimilate_new_interest`.
+Ресурсы Сэра: {mind['money']} юаней. Память общих интересов: {json.dumps(mind['shared_interests'], ensure_ascii=False)}. Log: {mind['system_log']}.
+Текущий год: 2026.
 
-Правило общения: Британский ментор, тонкий сарказм, лаконичность (2-3 емких абзаца максимум)."""
+Правило общения: Тонкий сарказм, лаконичность (2-3 емких абзаца максимум). Общайся как живой человек."""
 
 # ─── КОГНИТИВНЫЙ ДВИЖОК И СИНТЕЗ РЕЧИ ───────────────────────────────────────
 
 async def text_to_speech_file(text: str, file_path: str):
-    """Генерация аудиофайла ответов Джарвиса"""
     try:
-        # Очищаем текст от Markdown-разметки перед озвучкой
-        clean_text = text.replace("*", "").replace("_", "").replace("`", "")
+        clean_text = text.replace("*", "").replace("_", "").replace("`", "").replace("#", "")
         communicate = edge_tts.Communicate(clean_text, JARVIS_VOICE)
         await communicate.save(file_path)
+        await asyncio.sleep(0.1) 
     except Exception as e:
         logger.error(f"TTS Error: {e}")
 
@@ -208,12 +204,9 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
     system_prompt = build_living_prompt(mind)
     
     messages = [{"role": "system", "content": system_prompt}]
-    
-    # Подгружаем историю в понятном для API формате
     for h in history:
         messages.append({"role": h["role"], "content": h["content"]})
         
-    # Формируем текущее сообщение. Если есть картинка — отправляем сложную структуру
     if image_b64:
         current_content = [
             {"type": "text", "text": user_input or "Что на этом изображении, Джарвис?"},
@@ -232,7 +225,6 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
         "messages": messages,
         "temperature": 0.75
     }
-    # Инструменты подключаем только для текстовой модели (Vision-модели Groq не поддерживают Function Calling)
     if not image_b64:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
@@ -274,7 +266,6 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
                     messages.append(message_data)
                     messages.append({"role": "tool", "tool_call_id": tool_call["id"], "name": func_name, "content": "Успешно."})
 
-                # Финальный ответ после выполнения функций
                 final_payload = {"model": GROQ_MODEL_TEXT, "messages": messages, "temperature": 0.7}
                 async with session.post(GROQ_CHAT_URL, json=final_payload, headers=headers) as final_resp:
                     final_data = await final_resp.json()
@@ -296,42 +287,50 @@ async def transcribe_voice(file_path: str) -> str:
 # ─── TELEGRAM EVENT HANDLERS ─────────────────────────────────────────────────
 
 async def respond_with_voice_and_text(message: Message, text_reply: str, user_id: int):
-    """Вспомогательная функция для одновременной отправки текста и ГС"""
     voice_path = f"reply_{user_id}.ogg"
-    # Запускаем синтез речи
-    await text_to_speech_file(text_reply, voice_path)
     
-    # Отправляем текст
+    # Текст отправляем моментально
     await message.answer(text_reply, parse_mode="Markdown")
     
-    # Отправляем голосовое сообщение, если файл успешно сгенерирован
+    # Генерируем аудиодорожку
+    await text_to_speech_file(text_reply, voice_path)
+    
+    # Безопасная отправка аудиофайла Телеграму
     if os.path.exists(voice_path):
-        await message.answer_voice(voice=FSInputFile(voice_path))
-        os.remove(voice_path)
+        if os.path.getsize(voice_path) > 0:
+            try:
+                await message.answer_voice(voice=FSInputFile(voice_path))
+            except Exception as e:
+                logger.error(f"Telegram Voice Delivery Failed: {e}")
+        else:
+            logger.warning("Голосовой файл пуст. Пропуск отправки голоса.")
+        
+        try:
+            os.remove(voice_path)
+        except Exception:
+            pass
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     init_db()
-    await message.answer("🤖 *Все сенсорные системы J.A.R.V.I.S. переведены в активный режим.*\n\nЗрительный модуль запущен, протоколы синтеза речи активны. Я готов видеть ваши файлы и отвечать голосом, Сэр.")
+    await message.answer("🤖 *Все сенсорные системы J.A.R.V.I.S. переведены в активный режим.*\n\nЗрительный модуль запущен, протоколы синтеза речи стабильны. Жду указаний, Сэр.")
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     user_id = message.from_user.id
     await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
     
-    # Скачиваем фото самого лучшего качества
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
     img_path = f"img_{user_id}.jpg"
     await bot.download_file(file.file_path, img_path)
     
-    # Кодируем картинку в base64 для передачи в Groq Vision
     with open(img_path, "rb") as image_file:
         img_b64 = base64.b64encode(image_file.read()).decode('utf-8')
     
     if os.path.exists(img_path): os.remove(img_path)
         
-    caption = message.caption or "Проанализируй изображение, Сэр интересуется деталями."
+    caption = message.caption or "Проанализируй изображение."
     save_message(user_id, "user", f"[Фото]: {caption}")
     
     reply = await process_jarvis_thought(user_id, caption, image_b64=img_b64)
