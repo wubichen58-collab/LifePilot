@@ -3,3 +3,4 @@ edge-tts
 aiohttp
 textblob
 scikit-learn
+apscheduler
