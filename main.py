@@ -384,96 +384,67 @@ async def process_and_transcribe_audio(file_id: int, user_id: int) -> str:
     finally:
         if os.path.exists(local_path): os.remove(local_path)
 
-@dp.message(F.document)
-async def handle_incoming_document(message: Message):
-    """ИДЕЯ №1: Всеядный парсер таблиц, документов и книг (TXT, DOCX, XLSX, PDF)"""
+# --- ИСПРАВЛЕННЫЙ ВСЕЯДНЫЙ ОБРАБОТЧИК ---
+
+@dp.message(F.document | F.photo | F.audio | F.voice)
+async def handle_any_file(message: Message):
     user_id = message.from_user.id
     init_db()
     
-    file_name = message.document.file_name
-    file_ext = file_name.split(".")[-1].lower() if "." in file_name else ""
-    local_tmp_path = f"tmp_{user_id}_{file_name}"
-    content = ""
-    
-    try:
-        # 1. Текстовые файлы (.txt)
-        if file_ext == "txt" or message.document.mime_type in ["text/plain", "application/octet-stream"]:
-            file = await bot.get_file(message.document.file_id)
-            file_io = await bot.download_file(file.file_path)
-            content = file_io.read().decode('utf-8', errors='ignore')
-            
-        # 2. Файлы Word (.docx)
-        elif file_ext == "docx":
-            file = await bot.get_file(message.document.file_id)
-            await bot.download_file(file.file_path, local_tmp_path)
-            doc = docx.Document(local_tmp_path)
-            content = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-                
-        # 3. Книги и статьи PDF (.pdf)
-        elif file_ext == "pdf":
-            file = await bot.get_file(message.document.file_id)
-            await bot.download_file(file.file_path, local_tmp_path)
-            reader = pypdf.PdfReader(local_tmp_path)
-            text_slices = []
-            for page in reader.pages:
-                text = page.extract_text()
-                if text: text_slices.append(text)
-            content = "\n".join(text_slices)
-            
-        # 4. Таблицы Excel (.xlsx / .xls)
-        elif file_ext in ["xlsx", "xls"]:
-            file = await bot.get_file(message.document.file_id)
-            await bot.download_file(file.file_path, local_tmp_path)
-            wb = openpyxl.load_workbook(local_tmp_path, data_only=True)
-            table_slices = []
-            for sheet in wb.worksheets:
-                table_slices.append(f"--- Лист Excel: {sheet.title} ---")
-                for row in sheet.iter_rows(values_only=True):
-                    if any(row):  # Пропускаем пустые строки
-                        row_str = " | ".join([str(cell) if cell is not None else "" for cell in row])
-                        table_slices.append(row_str)
-            content = "\n".join(table_slices)
+    # 1. Если это фото
+    if message.photo:
+        await message.answer("📸 Получено фото. Включаю визуальный анализ...")
+        photo = message.photo[-1]
+        local_path = f"img_{user_id}.jpg"
+        await bot.download(photo, destination=local_path)
+        with open(local_path, "rb") as img_file:
+            img_b64 = base64.b64encode(img_file.read()).decode('utf-8')
+        os.remove(local_path)
+        reply = await process_jarvis_thought(user_id, "Проанализируй это изображение", image_b64=img_b64)
+        await respond_fast(message, reply, user_id)
+        return
 
-        else:
-            await message.answer(f"❌ Сэр, формат `.{file_ext}` мне пока не знаком. Пришлите txt, docx, pdf или таблицу xlsx.")
-            return
+    # 2. Если это аудио или голос
+    if message.audio or message.voice:
+        await message.answer("🎧 Анализирую аудиопоток...")
+        file_id = message.audio.file_id if message.audio else message.voice.file_id
+        text_input = await process_and_transcribe_audio(file_id, user_id)
+        if text_input:
+            reply = await process_jarvis_thought(user_id, f"Анализ аудио: {text_input}")
+            await respond_fast(message, reply, user_id, custom_text_log=f"📝 *Текст:* {text_input}\n\n{reply}")
+        return
 
-        if not content.strip():
-            await message.answer(f"⚠️ Сэр, файл `{file_name}` прочитан, но текстовых данных внутри не обнаружено.")
-        else:
-            add_to_knowledge_db(user_id, file_name, content)
-            await message.answer(f"✅ Протокол RAG: Массив `{file_name}` ({len(content)} симв.) успешно импортирован в долговременную память ассистента.")
-            
-    except Exception as e:
-        logger.error(f"Error document type: {e}")
-        await message.answer(f"💥 Сбой анализа структуры файла `{file_name}`.")
-    finally:
-        if os.path.exists(local_tmp_path):
-            try: os.remove(local_tmp_path)
-            except: pass
-
-@dp.message(F.photo)
-async def handle_photo(message: Message):
-    """Сенсор компьютерного зрения (OCR + Анализ картинок / графиков)"""
-    user_id = message.from_user.id
-    init_db()
-    
-    photo = message.photo[-1] # Берем максимальное качество
-    local_path = f"img_{user_id}.jpg"
-    
-    await bot.download(photo, destination=local_path)
-    
-    with open(local_path, "rb") as image_file:
-        img_b64 = base64.b64encode(image_file.read()).decode('utf-8')
+    # 3. Если это любой другой документ
+    if message.document:
+        file_name = message.document.file_name
+        file_ext = file_name.split(".")[-1].lower()
+        local_tmp_path = f"tmp_{user_id}_{file_name}"
+        await bot.download_file((await bot.get_file(message.document.file_id)).file_path, local_tmp_path)
         
-    if os.path.exists(local_path): os.remove(local_path)
-    
-    caption = message.caption or "Проанализируй изображение"
-    save_message(user_id, "user", f"[Фотография]: {caption}")
-    
-    reply = await process_jarvis_thought(user_id, caption, image_b64=img_b64)
-    save_message(user_id, "assistant", reply)
-    await respond_fast(message, reply, user_id)
+        content = ""
+        try:
+            if file_ext in ["txt", "csv", "json"]:
+                with open(local_tmp_path, "r", encoding="utf-8", errors="ignore") as f: content = f.read()
+            elif file_ext == "docx":
+                doc = docx.Document(local_tmp_path)
+                content = "\n".join([p.text for p in doc.paragraphs])
+            elif file_ext == "pdf":
+                reader = pypdf.PdfReader(local_tmp_path)
+                content = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+            elif file_ext in ["xlsx", "xls"]:
+                wb = openpyxl.load_workbook(local_tmp_path, data_only=True)
+                content = "\n".join([f"Лист {s.title}: " + " | ".join([str(c) for c in r if c]) for s in wb.worksheets for r in s.iter_rows(values_only=True)])
+            else:
+                # Если формат неизвестен, пробуем прочитать как текст
+                with open(local_tmp_path, "r", encoding="utf-8", errors="ignore") as f: content = f.read(5000)
+            
+            if content:
+                add_to_knowledge_db(user_id, file_name, content)
+                await message.answer(f"✅ Файл `{file_name}` принят и проиндексирован.")
+            else:
+                await message.answer("⚠️ Не удалось извлечь текст из этого файла.")
+        finally:
+            if os.path.exists(local_tmp_path): os.remove(local_tmp_path)
 
 @dp.message(F.voice)
 async def handle_telegram_voice(message: Message):
