@@ -23,8 +23,10 @@ import docx
 import openpyxl
 import pypdf
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.DEBUG, # Меняем INFO на DEBUG
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
