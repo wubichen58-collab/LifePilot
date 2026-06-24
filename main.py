@@ -146,14 +146,19 @@ async def get_weather_forecast() -> str:
 
 async def search_netease_music(query: str) -> str:
     try:
-        import pyncm
-        results = pyncm.apis.cloudsearch.GetSearchResult(query, limit=5)
-        songs = results["result"]["songs"]
-        lines = [f"🎵 Результаты по '{query}':"]
-        for s in songs:
-            artist = s["ar"][0]["name"]
-            lines.append(f"• {s['name']} — {artist}")
-        return "\n".join(lines)
+        async with aiohttp.ClientSession() as session:
+            url = "https://music.163.com/api/search/get"
+            params = {"s": query, "type": 1, "limit": 5}
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com"}
+            async with session.post(url, data=params, headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                data = await resp.json(content_type=None)
+                songs = data["result"]["songs"]
+                lines = [f"🎵 Результаты по '{query}':"]
+                for s in songs:
+                    artist = s["artists"][0]["name"]
+                    lines.append(f"• {s['name']} — {artist}")
+                return "\n".join(lines)
     except Exception as e:
         logger.error(f"NetEase error: {e}")
         return "Не удалось найти музыку."
