@@ -6,3 +6,4 @@ scikit-learn
 apscheduler
 python-docx
 openpyxl
+pypdf
