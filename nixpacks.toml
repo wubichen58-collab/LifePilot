@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["libxcb", "libGL"]
+
+[phases.install]
+cmds = [
+  "pip uninstall -y opencv-python opencv-contrib-python || true",
+  "pip install opencv-python-headless"
+]
