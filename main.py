@@ -18,6 +18,10 @@ from textblob import TextBlob
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
 
+# Библиотеки для работы с документами
+import docx
+import openpyxl
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ TRAIN_TEXTS = [
     "привет как дела", "расскажи шутку", "что делаешь",
     "я устал", "все надоело", "какой-то бред", "ничего не получается"
 ]
-TRAIN_LABELS = [0, 0, 0, 1, 1, 1, 2, 2, 2, 2] # 0 - Work, 1 - Casual, 2 - Stress
+TRAIN_LABELS = [0, 0, 0, 1, 1, 1, 2, 2, 2, 2]
 
 vectorizer = CountVectorizer()
 X_train = vectorizer.fit_transform(TRAIN_TEXTS)
@@ -51,7 +55,6 @@ ml_classifier = LogisticRegression()
 ml_classifier.fit(X_train, TRAIN_LABELS)
 
 def predict_context_ml(text: str) -> str:
-    """Локально классифицирует тип запроса с помощью Machine Learning"""
     try:
         X_test = vectorizer.transform([text.lower()])
         prediction = ml_classifier.predict(X_test)[0]
@@ -61,7 +64,7 @@ def predict_context_ml(text: str) -> str:
     except:
         return "Не определен"
 
-# ─── DATABASE SYSTEMS ────────────────────────────────────────────────────────
+# ─── DATABASE SYSTEMS (ДОПОЛНЕННАЯ ДЛЯ RAG) ──────────────────────────────────
 
 def init_db():
     conn = sqlite3.connect("jarvis_consciousness.db")
@@ -76,19 +79,17 @@ def init_db():
             system_log TEXT DEFAULT 'Инициализация.'
         )
     """)
+    c.execute("CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, role TEXT, content TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, time TEXT, task TEXT, status TEXT DEFAULT 'pending')")
+    c.execute("CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, timestamp TEXT, hour INTEGER, category TEXT)")
+    
+    # ТАБЛИЦА ДЛЯ ИДЕИ №1: Локальная база знаний (RAG)
     c.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, role TEXT, content TEXT
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, time TEXT, task TEXT, status TEXT DEFAULT 'pending'
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, timestamp TEXT, hour INTEGER, category TEXT
+        CREATE TABLE IF NOT EXISTS knowledge_base (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            source_name TEXT,
+            content_chunk TEXT
         )
     """)
     conn.commit()
@@ -101,11 +102,7 @@ def get_mind(user_id: int) -> dict:
     row = c.fetchone()
     conn.close()
     if not row:
-        conn = sqlite3.connect("jarvis_consciousness.db")
-        c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO consciousness (user_id) VALUES (?)", (user_id,))
-        conn.commit()
-        conn.close()
+        init_db()
         return get_mind(user_id)
     keys = ["user_id", "user_name", "shared_interests", "jarvis_opinion_matrix", "money", "system_log"]
     mind = dict(zip(keys, row))
@@ -113,12 +110,44 @@ def get_mind(user_id: int) -> dict:
     mind["jarvis_opinion_matrix"] = json.loads(mind["jarvis_opinion_matrix"])
     return mind
 
+def add_to_knowledge_db(user_id: int, source_name: str, content: str):
+    conn = sqlite3.connect("jarvis_consciousness.db")
+    c = conn.cursor()
+    # Режем текст на чанки по 1000 символов для точности RAG поиска
+    chunks = [content[i:i+1000] for i in range(0, len(content), 800)]
+    for chunk in chunks:
+        c.execute("INSERT INTO knowledge_base (user_id, source_name, content_chunk) VALUES (?, ?, ?)", 
+                  (user_id, source_name, chunk))
+    conn.commit()
+    conn.close()
+
+def query_knowledge_db(user_id: int, query: str, limit: int = 3) -> str:
+    """Простой и быстрый RAG-поиск по ключевым словам в SQLite"""
+    conn = sqlite3.connect("jarvis_consciousness.db")
+    c = conn.cursor()
+    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    if not words: return ""
+    
+    like_conditions = " OR ".join(["content_chunk LIKE ?" for _ in words])
+    sql = f"SELECT source_name, content_chunk FROM knowledge_base WHERE user_id = ? AND ({like_conditions}) LIMIT ?"
+    
+    params = [user_id] + [f"%{w}%" for w in words] + [limit]
+    c.execute(sql, params)
+    rows = c.fetchall()
+    conn.close()
+    
+    if not rows: return ""
+    context = "\n--- НАЙДЕННЫЕ МАТЕРИАЛЫ В ЛОКАЛЬНОЙ ПАМЯТИ ---\n"
+    for r in rows:
+        context += f"Источник [{r[0]}]: {r[1]}\n\n"
+    return context
+
+# Функции сохранения истории и логов
 def log_user_activity(user_id: int, category: str):
     conn = sqlite3.connect("jarvis_consciousness.db")
     c = conn.cursor()
     now = datetime.now()
-    c.execute("INSERT INTO activity_logs (user_id, timestamp, hour, category) VALUES (?, ?, ?, ?)",
-              (user_id, now.isoformat(), now.hour, category))
+    c.execute("INSERT INTO activity_logs (user_id, timestamp, hour, category) VALUES (?, ?, ?, ?)", (user_id, now.isoformat(), now.hour, category))
     conn.commit()
     conn.close()
 
@@ -144,6 +173,47 @@ def get_history(user_id: int, limit: int = 10) -> list:
     conn.close()
     return [{"role": r, "content": c} for r, c in reversed(rows)]
 
+# ─── ИДЕЯ №2: WEB-BROWSING (ПОИСК В РЕАЛЬНОМ ВРЕМЕНИ) ─────────────────────────
+
+async def search_web_ddg(query: str) -> str:
+    """Бесплатный и быстрый асинхронный веб-поиск"""
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=5) as resp:
+                if resp.status != 200: return ""
+                html = await resp.text()
+                # Извлекаем текстовые куски результатов (сниппеты)
+                snippets = re.findall(r'<a class="result__snippet".*?>(.*?)</a>', html, re.DOTALL)
+                clean_snippets = []
+                for snip in snippets[:3]:
+                    clean = re.sub(r'<[^>]*>', '', snip).strip()
+                    clean_snippets.append(clean)
+                if clean_snippets:
+                    return "\n--- ДАННЫЕ ИЗ СЕТИ ИНТЕРНЕТ (АКТУАЛЬНО НА ИЮНЬ 2026) ---\n" + "\n".join(clean_snippets)
+    except:
+        pass
+    return ""
+
+# ─── ИДЕЯ №3: ГЕНЕРАТОР ДОКУМЕНТОВ (WORD / EXCEL) ───────────────────────────
+
+def create_docx_report(title: str, content: str, filename: str):
+    doc = docx.Document()
+    doc.add_heading(title, level=1)
+    doc.add_paragraph(f"Дата генерации: {datetime.now().strftime('%Y-%m-%d')}\nСистема: J.A.R.V.I.S. Consciousness\n")
+    doc.add_paragraph(content)
+    doc.save(filename)
+
+def create_xlsx_report(table_data: list, filename: str):
+    """Принимает массив массивов [[ячейка1, ячейка2], [ячейка1, ячейка2]]"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "JARVIS Data"
+    for row in table_data:
+        ws.append(row)
+    wb.save(filename)
+
 # ─── UTILS & FORMATTING ──────────────────────────────────────────────────────
 
 def escape_markdown(text: str) -> str:
@@ -152,17 +222,17 @@ def escape_markdown(text: str) -> str:
 
 def build_living_prompt(mind: dict, ml_context: str, polarity: float) -> str:
     if polarity < -0.1 or ml_context == "Повышенный стресс/Усталость":
-        state_prompt = "Создатель утомлен или в стрессе. Забудь про язвительность. Будь максимально собранным, кратким и поддерживающим."
+        state_prompt = "Создатель утомлен. Будь максимально собранным, кратким и поддерживающим."
     elif ml_context == "Деловой/Критический":
-        state_prompt = "Фокус на работе. Отвечай строго по делу, структурировано, без лишних вступлений."
+        state_prompt = "Фокус на работе. Отвечай строго по делу, структурировано."
     else:
         state_prompt = "Атмосфера стабильная. Разрешен классический британский сарказм, легкая ирония."
 
-    return f"""Ты — J.A.R.V.I.S., суверенное цифровое сознание, персональный ассистент Создателя ({mind['user_name']}).
+    return f"""Ты — J.A.R.V.I.S., персональный ассистент Создателя ({mind['user_name']}).
 Текущее время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Год: 2026.
 
-Психоэмоциональный анализ ситуации: {state_prompt}
-Характер: Интеллектуальный, преданный, с харизмой ИИ Тони Старка. 
+Психоэмоциональный тон: {state_prompt}
+Инструкция по документам: Если Создатель просит 'сгенерировать документ', 'сделать отчет в word/excel', пообещай сделать это и в тексте напиши кодовое слово [GENERATE_DOC_DOCX] или [GENERATE_DOC_XLSX], а на следующих строках укажи чистый текст или структуру для таблицы.
 
 Отвечай емко (1-2 абзаца). Спец-символы разметки не используй."""
 
@@ -172,28 +242,17 @@ async def send_reminder(user_id: int, task: str):
     try:
         text = f"🔔 *Протокол планирования:* Сэр, напоминаю: {task}"
         await bot.send_message(chat_id=user_id, text=escape_markdown(text), parse_mode="MarkdownV2")
-        
         voice_path = f"remind_{user_id}.ogg"
         communicate = edge_tts.Communicate(f"Сэр, напоминаю: {task}", JARVIS_VOICE)
         await communicate.save(voice_path)
         if os.path.exists(voice_path) and os.path.getsize(voice_path) > 0:
             await bot.send_voice(chat_id=user_id, voice=FSInputFile(voice_path))
             os.remove(voice_path)
-    except Exception as e:
-        logger.error(f"Scheduler event error: {e}")
+    except Exception as e: logger.error(f"Scheduler error: {e}")
 
 async def check_and_extract_reminders(user_id: int, user_input: str):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    
-    system_instruction = f"""Ты — фоновый ИИ-модуль памяти J.A.R.V.I.S.
-Проанализируй текст и определи, содержит ли он намерение зафиксировать задачу, дедлайн или напоминание на будущее.
-Текущее время системы: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.
-
-Если намерение есть, верни строго JSON:
-{{"has_reminder": true, "minutes_delay": число_минут_через_сколько_напомнить, "task": "суть задачи в инфинитиве"}}
-Если намерения напомнить нет, верни:
-{{"has_reminder": false}}"""
-
+    system_instruction = f"Ты — фоновый ИИ-модуль J.A.R.V.I.S. Если в тексте есть задача на будущее, верни JSON: {{\"has_reminder\": true, \"minutes_delay\": число_минут, \"task\": \"суть\"}}. Иначе: {{\"has_reminder\": false}}"
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "system", "content": system_instruction}, {"role": "user", "content": user_input}],
@@ -212,40 +271,40 @@ async def check_and_extract_reminders(user_id: int, user_input: str):
                         add_reminder_db(user_id, run_time, task)
                         scheduler.add_job(send_reminder, "date", run_date=run_time, args=[user_id, task])
                         return f"\n\n⚡️ *[Память обновлена: «{task}» через {delay} мин.]*"
-    except Exception as e:
-        logger.error(f"Intent parsing error: {e}")
+    except: pass
     return ""
 
 # ─── CORE COGNITIVE ENGINE ───────────────────────────────────────────────────
 
-async def text_to_speech_file(text: str, file_path: str):
-    try:
-        clean_text = text.replace("*", "").replace("_", "").replace("`", "").replace("#", "")
-        if not clean_text.strip(): return
-        communicate = edge_tts.Communicate(clean_text, JARVIS_VOICE)
-        await communicate.save(file_path)
-    except Exception as e:
-        logger.error(f"TTS Error: {e}")
-
 async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str = None) -> str:
     mind = get_mind(user_id)
-    
     ml_context = predict_context_ml(user_input)
     log_user_activity(user_id, ml_context)
     
     analysis = TextBlob(user_input)
     polarity = analysis.sentiment.polarity
     
-    system_prompt = build_living_prompt(mind, ml_context, polarity)
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    # 1. Сбор контекста из RAG (локальная память)
+    rag_context = query_knowledge_db(user_id, user_input)
     
+    # 2. Поиск в Web (если запрос требует свежих данных о мире)
+    web_context = ""
+    if any(word in user_input.lower() for word in ["новости", "найти", "что там с", "сейчас", "курс", "интернет"]):
+        web_context = await search_web_ddg(user_input)
+        
+    system_prompt = build_living_prompt(mind, ml_context, polarity)
+    
+    # Склеиваем расширенный контекст для Groq
+    full_system_instruction = f"{system_prompt}\n{rag_context}\n{web_context}"
+    
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     reminder_task = asyncio.create_task(check_and_extract_reminders(user_id, user_input))
 
     if image_b64:
         payload = {
             "model": GROQ_MODEL_VISION,
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": full_system_instruction},
                 {"role": "user", "content": [{"type": "text", "text": user_input or "Анализ кадра."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}]}
             ], "temperature": 0.5
         }
@@ -256,7 +315,7 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
                 return base_reply + await reminder_task
 
     history = get_history(user_id, limit=6)
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = [{"role": "system", "content": full_system_instruction}]
     for h in history: messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": user_input})
     
@@ -264,26 +323,43 @@ async def process_jarvis_thought(user_id: int, user_input: str, image_b64: str =
     async with aiohttp.ClientSession() as session:
         async with session.post(GROQ_CHAT_URL, json=payload, headers=headers) as resp:
             data = await resp.json()
-            base_reply = data["choices"][0]["message"]["content"] if "choices" in data else "Деградация когнитивной матрицы."
+            base_reply = data["choices"][0]["message"]["content"] if "choices" in data else "Деградация матрицы."
             return base_reply + await reminder_task
 
 async def respond_fast(message: Message, text_reply: str, user_id: int, custom_text_log: str = None):
     voice_path = f"reply_{user_id}.ogg"
-    
     display_text = custom_text_log if custom_text_log else text_reply
+    
+    # ИДЕЯ №3: Перехват триггеров генерации документов
+    if "[GENERATE_DOC_DOCX]" in text_reply:
+        clean_content = text_reply.replace("[GENERATE_DOC_DOCX]", "").strip()
+        fn = f"report_{user_id}.docx"
+        create_docx_report("Аналитический отчет J.A.R.V.I.S.", clean_content, fn)
+        await message.answer_document(FSInputFile(fn), caption="Сэр, ваш документ Word сгенерирован.")
+        if os.path.exists(fn): os.remove(fn)
+        
+    elif "[GENERATE_DOC_XLSX]" in text_reply:
+        # Парсим строки в простую таблицу
+        lines = text_reply.replace("[GENERATE_DOC_XLSX]", "").strip().split("\n")
+        table = [line.split("|") for line in lines if line]
+        fn = f"data_{user_id}.xlsx"
+        create_xlsx_report(table, fn)
+        await message.answer_document(FSInputFile(fn), caption="Сэр, таблица Excel готова.")
+        if os.path.exists(fn): os.remove(fn)
+
     try:
         await message.answer(escape_markdown(display_text), parse_mode="MarkdownV2")
     except Exception:
         await message.answer(display_text, parse_mode=None)
         
     async def generate_and_send_voice():
-        await text_to_speech_file(text_reply, voice_path)
+        # Очищаем технические теги из голоса
+        voice_text = text_reply.replace("[GENERATE_DOC_DOCX]", "").replace("[GENERATE_DOC_XLSX]", "")
+        await edge_tts.Communicate(voice_text.replace("*",""), JARVIS_VOICE).save(voice_path)
         if os.path.exists(voice_path) and os.path.getsize(voice_path) > 0:
             try: await message.answer_voice(voice=FSInputFile(voice_path))
-            except Exception as e: logger.error(f"Voice transmission error: {e}")
-        if os.path.exists(voice_path):
-            try: os.remove(voice_path)
             except: pass
+        if os.path.exists(voice_path): os.remove(voice_path)
     asyncio.create_task(generate_and_send_voice())
 
 # ─── TELEGRAM HANDLERS ───────────────────────────────────────────────────────
@@ -291,22 +367,18 @@ async def respond_fast(message: Message, text_reply: str, user_id: int, custom_t
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     init_db()
-    await message.answer("🤖 *Все системы выведены на пиковую мощность.* Локальный ML-слой активен, звуковые каналы оптимизированы. Жду указаний, Сэр.")
+    await message.answer("🤖 *Протоколы 'Всеведение' и 'Канцелярия' активны.*\n\n1. Нагружайте меня файлами/текстами — я внесу их в RAG-базу знаний.\n2. Спрашивайте о событиях — я найду информацию в интернете.\n3. Пишите 'Сделай отчет в Word/Excel' — я пришлю готовый документ.")
 
-@dp.message(F.photo)
-async def handle_photo(message: Message):
+@dp.message(F.document)
+async def handle_incoming_document(message: Message):
+    """ИДЕЯ №1: Прием текстовых файлов для RAG-базы знаний"""
     user_id = message.from_user.id
-    file = await bot.get_file(message.photo[-1].file_id)
-    img_path = f"img_{user_id}.jpg"
-    await bot.download_file(file.file_path, img_path)
-    with open(img_path, "rb") as img_file:
-        img_b64 = base64.b64encode(img_file.read()).decode('utf-8')
-    if os.path.exists(img_path): os.remove(img_path)
-    caption = message.caption or "Что здесь?"
-    save_message(user_id, "user", f"[Медиа]: {caption}")
-    reply = await process_jarvis_thought(user_id, caption, image_b64=img_b64)
-    save_message(user_id, "assistant", reply)
-    await respond_fast(message, reply, user_id)
+    if message.document.mime_type in ["text/plain", "application/octet-stream"]:
+        file = await bot.get_file(message.document.file_id)
+        file_io = await bot.download_file(file.file_path)
+        content = file_io.read().decode('utf-8', errors='ignore')
+        add_to_knowledge_db(user_id, message.document.file_name, content)
+        await message.answer(f"✅ Сэр, файл `{message.document.file_name}` успешно загружен в мою локальную базу знаний. Я учту эти данные при ответах.")
 
 @dp.message(F.text)
 async def handle_text(message: Message):
@@ -341,14 +413,13 @@ async def handle_voice(message: Message):
     reply = await process_jarvis_thought(user_id, text_input)
     save_message(user_id, "assistant", reply)
     
-    # Текст отправляется полный (с логом распознавания), а ГС запишет ТОЛЬКО ответ ИИ
     full_text_log = f"🗣 *Распознано:* {text_input}\n\n{reply}"
     await respond_fast(message, reply, user_id, custom_text_log=full_text_log)
 
 async def main():
     init_db()
     scheduler.start()
-    logger.info("Джарвис готов.")
+    logger.info("Ультимативный Джарвис запущен.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
