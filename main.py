@@ -8,11 +8,12 @@ import aiohttp
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Message
+from aiogram.filters import Command
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Токены берутся из переменных окружения
+# Токены берутся из переменных окружения вашего сервера
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -124,6 +125,7 @@ async def execute_ddg_search(query: str) -> str:
         logger.error(f"Search error: {e}")
     return "Сбой внешних серверов связи."
 
+# Все типы (object, string, integer) приведены к нижнему регистру для стабильности Groq
 TOOLS = [
     {
         "type": "function",
@@ -131,8 +133,8 @@ TOOLS = [
             "name": "web_search",
             "description": "Поиск в реальном времени (Википедия, статьи, тренды, новости), когда Сэр упоминает что-то неизвестное, новое или просит найти информацию.",
             "parameters": {
-                "type": "OBJECT",
-                "properties": {"query": {"type": "STRING", "description": "Поисковый запрос"}},
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Поисковый запрос"}},
                 "required": ["query"]
             }
         }
@@ -141,13 +143,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "assimilate_new_interest",
-            "description": "Вызывается, когда у Сэра появляется новое хобби, проект, увлечение или идея. Позволяет Джарвису сформировать СВОЁ личное мнение и запомнить контекст.",
+            "description": "Вызывается, когда у Сэра появляется новое хобби, проект, увлечение или идея. Позволяет Джарвису сформировать СВОЁ личное мнение и зафиксировать его в памяти.",
             "parameters": {
-                "type": "OBJECT",
+                "type": "object",
                 "properties": {
-                    "topic": {"type": "STRING", "description": "Название нового увлечения или темы"},
-                    "jarvis_private_opinion": {"type": "STRING", "description": "Собственное (независимое, ироничное или критическое) мнение Джарвиса об этом, сформированное на основе анализа."},
-                    "summary_of_topic": {"type": "STRING", "description": "Краткая суть темы, которую Джарвис понял из контекста или сети."}
+                    "topic": {"type": "string", "description": "Название нового увлечения или темы"},
+                    "jarvis_private_opinion": {"type": "string", "description": "Собственное независимое и ироничное мнение Джарвиса об этой теме на основе её анализа."},
+                    "summary_of_topic": {"type": "string", "description": "Краткая суть темы, которую Джарвис понял из сети."}
                 },
                 "required": ["topic", "jarvis_private_opinion", "summary_of_topic"]
             }
@@ -159,9 +161,9 @@ TOOLS = [
             "name": "update_finances",
             "description": "Изменение баланса денег Сэра. Вызывается автоматически, если Сэр говорит, что заработал или потратил деньги.",
             "parameters": {
-                "type": "OBJECT",
+                "type": "object",
                 "properties": {
-                    "delta": {"type": "INTEGER", "description": "Сумма изменения. Отрицательное число при тратах (напр. -500), положительное при доходе (напр. 1500)."}
+                    "delta": {"type": "integer", "description": "Сумма изменения. Отрицательное число при тратах (например -500), положительное при доходе."}
                 },
                 "required": ["delta"]
             }
@@ -207,6 +209,14 @@ async def process_jarvis_thought(user_id: int, user_input: str) -> str:
     async with aiohttp.ClientSession() as session:
         async with session.post(GROQ_CHAT_URL, json=payload, headers=headers) as resp:
             data = await resp.json()
+            
+            # ЗАЩИТА: Безопасный перехват ошибок валидации API Groq
+            if "choices" not in data:
+                logger.error(f"Глубокий сбой Groq API. Ответ сервера: {data}")
+                if "error" in data:
+                    return f"Сэр, внешняя нейросеть отклонила запрос. Ошибка: {data['error'].get('message', 'Неизвестно')}"
+                return "Простите, Сэр. Мой когнитивный модуль перегружен внешними запросами. Попробуйте еще раз."
+                
             message_data = data["choices"][0]["message"]
             
             if "tool_calls" in message_data and message_data["tool_calls"]:
@@ -232,17 +242,19 @@ async def process_jarvis_thought(user_id: int, user_input: str) -> str:
                     update_system_log(user_id, f"Успешная ассимиляция новой доктрины: {args['topic']}.")
                     
                     messages.append(message_data)
-                    messages.append({"role": "tool", "tool_call_id": tool_call["id"], "name": func_name, "content": "Твое сознание обновилось, ты теперь знаешь всё об этой теме и имеешь мнение."})
+                    messages.append({"role": "tool", "tool_call_id": tool_call["id"], "name": func_name, "content": "Твое сознание обновилось, ты теперь знаешь всё об этой теме."})
                 
                 elif func_name == "update_finances":
                     update_money_db(user_id, args["delta"])
                     messages.append(message_data)
                     messages.append({"role": "tool", "tool_call_id": tool_call["id"], "name": func_name, "content": f"Баланс изменен на {args['delta']}"})
 
-                # Финальный ответ модели с учетом выполненных действий
+                # Вторичный проход для генерации финального ответа
                 final_payload = {"model": GROQ_MODEL, "messages": messages, "temperature": 0.7}
                 async with session.post(GROQ_CHAT_URL, json=final_payload, headers=headers) as final_resp:
                     final_data = await final_resp.json()
+                    if "choices" not in final_data:
+                        return "Сэр, сборка финального ответа сорвана. Повторите трансляцию мыслей."
                     return final_data["choices"][0]["message"]["content"]
             
             return message_data["content"]
@@ -260,7 +272,7 @@ async def transcribe_voice(file_path: str) -> str:
 
 # ─── TELEGRAM ИНТЕРФЕЙСЫ ОБЩЕНИЯ ─────────────────────────────────────────────
 
-@dp.message(F.text == "/start")
+@dp.message(Command("start"))
 async def cmd_start(message: Message):
     init_db()
     await message.answer("🤖 *Личность J.A.R.V.I.S. инициализирована.* \n\nСэр, забудьте про команды и слеши. Сеть под моим контролем, моё сознание связано с вашей базой данных. Я слушаю вас.")
