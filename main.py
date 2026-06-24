@@ -31,7 +31,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_MODEL_TEXT = "llama-3.3-70b-versatile"
+GROQ_MODEL_TEXT = "llama-3.1-8b-instant"
 GROQ_MODEL_VISION = "llama-3.2-11b-vision-preview"
 
 bot = Bot(token=BOT_TOKEN)
