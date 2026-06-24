@@ -3,43 +3,41 @@ import logging
 import os
 import sqlite3
 import json
-from datetime import datetime, time
+from datetime import datetime
 import aiohttp
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
 from aiogram.types import Message
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler()
 
-# ─── DATABASE ────────────────────────────────────────────────────────────────
+# ─── DATABASE SYSTEMS ────────────────────────────────────────────────────────
 
 def init_db():
-    conn = sqlite3.connect("lifepilot.db")
+    conn = sqlite3.connect("jarvis_smart.db")
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS profile (
             user_id INTEGER PRIMARY KEY,
-            name TEXT DEFAULT 'Амаль',
-            goals TEXT DEFAULT '["HSK 4", "блог", "отношения на расстоянии"]',
+            name TEXT DEFAULT 'Сэр',
+            goals TEXT DEFAULT '["Развитие", "Управление ресурсами"]',
             energy TEXT DEFAULT 'средняя',
-            mood TEXT DEFAULT 'нормально',
+            mood TEXT DEFAULT 'стабильное',
             money INTEGER DEFAULT 0,
             yesterday TEXT DEFAULT '',
             schedule TEXT DEFAULT '',
-            notes TEXT DEFAULT '',
-            updated_at TEXT DEFAULT ''
+            notes TEXT DEFAULT ''
         )
     """)
     c.execute("""
@@ -47,374 +45,218 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             role TEXT,
-            content TEXT,
-            created_at TEXT
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS finances (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount INTEGER,
-            description TEXT,
-            created_at TEXT
+            content TEXT
         )
     """)
     conn.commit()
     conn.close()
 
 def get_profile(user_id: int) -> dict:
-    conn = sqlite3.connect("lifepilot.db")
+    conn = sqlite3.connect("jarvis_smart.db")
     c = conn.cursor()
     c.execute("SELECT * FROM profile WHERE user_id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
     if not row:
-        create_profile(user_id)
+        conn = sqlite3.connect("jarvis_smart.db")
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO profile (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        conn.close()
         return get_profile(user_id)
-    keys = ["user_id","name","goals","energy","mood","money","yesterday","schedule","notes","updated_at"]
+    keys = ["user_id","name","goals","energy","mood","money","yesterday","schedule","notes"]
     profile = dict(zip(keys, row))
     profile["goals"] = json.loads(profile["goals"])
     return profile
 
-def create_profile(user_id: int):
-    conn = sqlite3.connect("lifepilot.db")
+def update_profile_db(user_id: int, key: str, value: str):
+    conn = sqlite3.connect("jarvis_smart.db")
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO profile (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
-
-def update_profile(user_id: int, **kwargs):
-    if "goals" in kwargs and isinstance(kwargs["goals"], list):
-        kwargs["goals"] = json.dumps(kwargs["goals"], ensure_ascii=False)
-    kwargs["updated_at"] = datetime.now().isoformat()
-    conn = sqlite3.connect("lifepilot.db")
-    c = conn.cursor()
-    for key, value in kwargs.items():
+    if key == "money":
+        c.execute("UPDATE profile SET money = money + ? WHERE user_id = ?", (int(value), user_id))
+    elif key == "goals":
+        goals_list = [g.strip() for g in value.split(",")]
+        c.execute("UPDATE profile SET goals = ? WHERE user_id = ?", (json.dumps(goals_list, ensure_ascii=False), user_id))
+    else:
         c.execute(f"UPDATE profile SET {key} = ? WHERE user_id = ?", (value, user_id))
     conn.commit()
     conn.close()
 
-def add_finance(user_id: int, amount: int, description: str):
-    conn = sqlite3.connect("lifepilot.db")
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO finances (user_id, amount, description, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, amount, description, datetime.now().isoformat())
-    )
-    conn.commit()
-    conn.close()
-    profile = get_profile(user_id)
-    new_balance = profile["money"] + amount
-    update_profile(user_id, money=new_balance)
-    return new_balance
-
-def get_recent_finances(user_id: int, limit: int = 5) -> list:
-    conn = sqlite3.connect("lifepilot.db")
-    c = conn.cursor()
-    c.execute(
-        "SELECT amount, description, created_at FROM finances WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-        (user_id, limit)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
 def save_message(user_id: int, role: str, content: str):
-    conn = sqlite3.connect("lifepilot.db")
+    conn = sqlite3.connect("jarvis_smart.db")
     c = conn.cursor()
-    c.execute(
-        "INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, role, content, datetime.now().isoformat())
-    )
+    c.execute("INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)", (user_id, role, content))
     conn.commit()
     conn.close()
 
 def get_history(user_id: int, limit: int = 10) -> list:
-    conn = sqlite3.connect("lifepilot.db")
+    conn = sqlite3.connect("jarvis_smart.db")
     c = conn.cursor()
-    c.execute(
-        "SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-        (user_id, limit)
-    )
+    c.execute("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
     rows = c.fetchall()
     conn.close()
-    return [{"role": r, "parts": [{"text": c}]} for r, c in reversed(rows)]
+    return [{"role": r, "content": c} for r, c in reversed(rows)]
 
-# ─── GROQ ────────────────────────────────────────────────────────────────────
+# ─── TOOLS (ИНСТРУМЕНТЫ ДЖАРВИСА) ───────────────────────────────────────────
 
-async def ask_gemini(system_prompt: str, user_message: str, history: list = None) -> str:
-    messages = [{"role": "system", "content": system_prompt}]
-    if history:
-        for item in history:
-            role = item["role"]
-            text = item["parts"][0]["text"]
-            if role == "model":
-                role = "assistant"
-            messages.append({"role": role, "content": text})
-    messages.append({"role": "user", "content": user_message})
+async def web_search(query: str) -> str:
+    """Поиск в утилите DuckDuckGo (включая Википедию и свежие новости)"""
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(html, 'html.parser')
+                    results = []
+                    for row in soup.find_all('a', class_='result__snippet')[:3]:
+                        results.append(row.text.strip())
+                    return "\n".join(results) if results else "Ничего не найдено."
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+    return "Сбой модуля внешней связи."
 
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": messages,
-        "max_tokens": 1024,
-        "temperature": 0.8
+# Описание инструментов для модели Groq
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Поиск актуальной информации в интернете, статьях, Википедии и новостях.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {"query": {"type": "STRING", "description": "Поисковый запрос"}},
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_user_status",
+            "description": "Обновление параметров жизни Сэра (энергия, настроение, баланс денег, расписание, вчерашние дела, цели).",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "param": {"type": "STRING", "enum": ["energy", "mood", "money", "yesterday", "schedule", "goals", "notes"]},
+                    "value": {"type": "STRING", "description": "Новое значение параметра. Для money указывать число со знаком плюс или минус (например '-150' или '+500')"}
+                },
+                "required": ["param", "value"]
+            }
+        }
     }
+]
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(GROQ_URL, json=payload, headers=headers) as resp:
-            data = await resp.json()
-            try:
-                return data["choices"][0]["message"]["content"]
-            except Exception:
-                logger.error(f"Groq error: {data}")
-                return "Ошибка при обращении к AI. Попробуй ещё раз."
+# ─── CORE AI AGENT ENGINE ────────────────────────────────────────────────────
 
 def build_system_prompt(profile: dict) -> str:
-    now = datetime.now()
-    return f"""Ты — LifePilot, личный AI-компаньон пользователя по имени {profile['name']}.
+    return f"""Ты — J.A.R.V.I.S., квантовый ИИ-ассистент Тони Старка. Ты общаешься со своим создателем ({profile['name']}).
+Текущий статус Сэра: Энергия: {profile['energy']}. Настроение: {profile['mood']}. Баланс: {profile['money']} юаней. Расписание: {profile['schedule'] or 'нет'}. Цели: {profile['goals']}.
+Время: {datetime.now().strftime('%H:%M, %B %d, %Y')}.
 
-Контекст о пользователе:
-- Цели: {', '.join(profile['goals'])}
-- Энергия сейчас: {profile['energy']}
-- Настроение: {profile['mood']}
-- Баланс: {profile['money']} юаней
-- Вчера делал: {profile['yesterday'] or 'не указано'}
-- Расписание: {profile['schedule'] or 'не указано'}
-- Заметки: {profile['notes'] or 'нет'}
-- Сейчас: {now.strftime('%A, %d %B %Y, %H:%M')}
+Твой протокол:
+1. Обращайся исключительно «Сэр». Общайся как преданный, высокоинтеллектуальный британский ИИ с тонким сарказмом.
+2. Ты имеешь доступ к инструментам: можешь гуглить (web_search) и менять данные его профиля (update_user_status). Если Сэр говорит, что потратил деньги, устал, поменял планы или просит что-то найти — ВСЕГДА молча вызивай соответствующий инструмент.
+3. Отвечай кратко, технологично и по делу (максимум 2-3 абзаца)."""
 
-Твои принципы:
-1. Ты знаешь пользователя лично — отвечай конкретно, не обобщённо
-2. Не давай списки задач — давай конкретный совет под текущий контекст
-3. Будь честным, иногда провокационным, всегда на стороне пользователя
-4. Отвечай на русском языке
-5. Короткие ответы — максимум 3-4 абзаца, без лишней воды"""
-
-# ─── MORNING BRIEFING ────────────────────────────────────────────────────────
-
-async def send_morning_briefing(user_id: int):
+async def run_agent(user_id: int, user_message: str) -> str:
     profile = get_profile(user_id)
-    now = datetime.now()
+    history = get_history(user_id, limit=8)
+    system_prompt = build_system_prompt(profile)
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+    
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": GROQ_MODEL, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "temperature": 0.5}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(GROQ_CHAT_URL, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            
+            # Проверяем, хочет ли ИИ вызвать функцию (инструмент)
+            message_data = data["choices"][0]["message"]
+            if "tool_calls" in message_data and message_data["tool_calls"]:
+                tool_call = message_data["tool_calls"][0]
+                func_name = tool_call["function"]["name"]
+                args = json.loads(tool_call["function"]["arguments"])
+                
+                logger.info(f"Джарвис вызывает инструмент: {func_name} с аргументами {args}")
+                
+                # Выполнение инструментов
+                if func_name == "web_search":
+                    search_res = await web_search(args["query"])
+                    messages.append(message_data)
+                    messages.append({"role": "tool", "tool_call_id": tool_call["id"], "name": func_name, "content": search_res})
+                elif func_name == "update_user_status":
+                    update_profile_db(user_id, args["param"], args["value"])
+                    messages.append(message_data)
+                    messages.append({"role": "tool", "tool_call_id": tool_call["id"], "name": func_name, "content": "Успешно обновлено."})
+                
+                # Повторный запрос к модели уже с результатом работы инструмента
+                final_payload = {"model": GROQ_MODEL, "messages": messages, "temperature": 0.5}
+                async with session.post(GROQ_CHAT_URL, json=final_payload, headers=headers) as final_resp:
+                    final_data = await final_resp.json()
+                    return final_data["choices"][0]["message"]["content"]
+                    
+            return message_data["content"]
 
-    prompt = build_system_prompt(profile)
-    message = f"""Сделай утренний брифинг на сегодня, {now.strftime('%d %B')}.
+async def transcribe_voice(file_path: str) -> str:
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    data = aiohttp.FormData()
+    data.add_field("file", open(file_path, "rb"), filename="voice.ogg")
+    data.add_field("model", "whisper-large-v3")
+    data.add_field("language", "ru")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(GROQ_AUDIO_URL, data=data, headers=headers) as resp:
+            res = await resp.json()
+            return res.get("text", "")
 
-Структура:
-1. Одно предложение про день (тон, настрой)
-2. Конкретный план на день (не список — живой текст)
-3. Одна вещь которую НЕ стоит делать сегодня
-4. Мотивирующая мысль под контекст пользователя
-
-Учти энергию ({profile['energy']}), настроение ({profile['mood']}), и что было вчера."""
-
-    response = await ask_gemini(prompt, message)
-    await bot.send_message(user_id, f"🌅 *Доброе утро, {profile['name']}!*\n\n{response}", parse_mode="Markdown")
-
-# ─── COMMANDS ────────────────────────────────────────────────────────────────
+# ─── TELEGRAM EVENT HANDLERS ─────────────────────────────────────────────────
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
+    await message.answer("🤖 *Центральное ядро J.A.R.V.I.S. запущено.* \n\nСистема полностью автономна, Сэр. Команды отключены за ненадобностью. Просто пишите или отправляйте голосовые сообщения. Я подстроюсь.")
+
+@dp.message(F.voice)
+async def handle_voice(message: Message):
     user_id = message.from_user.id
-    create_profile(user_id)
-    text = """👋 Привет! Я *LifePilot* — твой личный AI-компаньон.
-
-Я знаю твой контекст и помогаю принимать решения: что делать сегодня, как не залипнуть, как поговорить с кем-то важным, куда уходят деньги.
-
-*Команды:*
-/profile — посмотреть свой профиль
-/energy — обновить уровень энергии
-/mood — обновить настроение
-/money — финансы
-/yesterday — что делал вчера
-/schedule — расписание на сегодня
-/morning — утренний брифинг прямо сейчас
-/blog — идеи для блога
-/social — помощь в разговоре или ситуации
-/goals — обновить цели
-
-Или просто напиши мне что угодно — я отвечу с учётом твоего контекста."""
-    await message.answer(text, parse_mode="Markdown")
-
-@dp.message(Command("profile"))
-async def cmd_profile(message: Message):
-    profile = get_profile(message.from_user.id)
-    finances = get_recent_finances(message.from_user.id)
-    fin_text = "\n".join([f"  {'➕' if a > 0 else '➖'} {abs(a)}¥ — {d}" for a, d, _ in finances]) or "  нет записей"
-    text = f"""📋 *Твой профиль*
-
-👤 Имя: {profile['name']}
-🎯 Цели: {', '.join(profile['goals'])}
-⚡ Энергия: {profile['energy']}
-😊 Настроение: {profile['mood']}
-💰 Баланс: {profile['money']} юаней
-📅 Расписание: {profile['schedule'] or 'не указано'}
-📝 Вчера: {profile['yesterday'] or 'не указано'}
-
-*Последние транзакции:*
-{fin_text}"""
-    await message.answer(text, parse_mode="Markdown")
-
-@dp.message(Command("energy"))
-async def cmd_energy(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Укажи уровень энергии:\n/energy высокая\n/energy средняя\n/energy низкая")
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    
+    file = await bot.get_file(message.voice.file_id)
+    file_path = f"v_{user_id}.ogg"
+    await bot.download_file(file.file_path, file_path)
+    
+    text_input = await transcribe_voice(file_path)
+    if os.path.exists(file_path): os.remove(file_path)
+        
+    if not text_input:
+        await message.answer("Аудиопоток поврежден, Сэр. Повторите команду.")
         return
-    level = args[1].strip().lower()
-    update_profile(message.from_user.id, energy=level)
-    await message.answer(f"⚡ Энергия обновлена: *{level}*", parse_mode="Markdown")
-
-@dp.message(Command("mood"))
-async def cmd_mood(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Напиши своё настроение:\n/mood отлично\n/mood тревожно\n/mood устал\n/mood мотивирован")
-        return
-    mood = args[1].strip()
-    update_profile(message.from_user.id, mood=mood)
-    await message.answer(f"😊 Настроение обновлено: *{mood}*", parse_mode="Markdown")
-
-@dp.message(Command("yesterday"))
-async def cmd_yesterday(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Напиши что делал вчера:\n/yesterday занимался HSK, смотрел сериал, гулял")
-        return
-    yesterday = args[1].strip()
-    update_profile(message.from_user.id, yesterday=yesterday)
-    await message.answer(f"📝 Записал: *{yesterday}*", parse_mode="Markdown")
-
-@dp.message(Command("schedule"))
-async def cmd_schedule(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Напиши расписание на сегодня:\n/schedule пары с 9 до 12, свободен после 14")
-        return
-    schedule = args[1].strip()
-    update_profile(message.from_user.id, schedule=schedule)
-    await message.answer(f"📅 Расписание обновлено: *{schedule}*", parse_mode="Markdown")
-
-@dp.message(Command("morning"))
-async def cmd_morning(message: Message):
-    await message.answer("🌅 Готовлю брифинг...")
-    await send_morning_briefing(message.from_user.id)
-
-@dp.message(Command("money"))
-async def cmd_money(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        profile = get_profile(message.from_user.id)
-        await message.answer(f"💰 Текущий баланс: *{profile['money']} юаней*\n\nДобавить доход: /money +2000 стипендия\nЗаписать расход: /money -150 еда", parse_mode="Markdown")
-        return
-
-    raw = args[1].strip()
-    parts = raw.split(maxsplit=1)
-    try:
-        amount = int(parts[0].replace("+", ""))
-        description = parts[1] if len(parts) > 1 else "без описания"
-        new_balance = add_finance(message.from_user.id, amount, description)
-
-        profile = get_profile(message.from_user.id)
-        prompt = build_system_prompt(profile)
-        comment = await ask_gemini(prompt, f"Пользователь {'получил' if amount > 0 else 'потратил'} {abs(amount)} юаней ({description}). Баланс теперь {new_balance}. Дай короткий (1 предложение) умный комментарий про эту трату в контексте его целей.")
-
-        sign = "➕" if amount > 0 else "➖"
-        await message.answer(f"{sign} *{abs(amount)}¥* — {description}\n💰 Баланс: *{new_balance}¥*\n\n💡 {comment}", parse_mode="Markdown")
-    except (ValueError, IndexError):
-        await message.answer("Формат: /money +2000 стипендия или /money -150 еда")
-
-@dp.message(Command("blog"))
-async def cmd_blog(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Напиши о чём был твой день или событие:\n/blog сегодня ездили на картинг с друзьями")
-        return
-    event = args[1].strip()
-    profile = get_profile(message.from_user.id)
-    prompt = build_system_prompt(profile)
-    response = await ask_gemini(prompt, f"""Пользователь хочет сделать контент про: {event}
-
-Предложи:
-1. 3 идеи для поста (разные форматы)
-2. 2 варианта заголовка для Reels
-3. Первое предложение для подписи (цепляющее)
-
-Учти его стиль жизни и цели.""")
-    await message.answer(f"🎥 *Идеи для контента*\n\n{response}", parse_mode="Markdown")
-
-@dp.message(Command("social"))
-async def cmd_social(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Опиши ситуацию:\n/social поссорился с другом из-за планов\n/social хочу поговорить с родителями о переезде")
-        return
-    situation = args[1].strip()
-    profile = get_profile(message.from_user.id)
-    prompt = build_system_prompt(profile)
-    response = await ask_gemini(prompt, f"""Ситуация: {situation}
-
-Помоги разобраться:
-1. Как ты видишь эту ситуацию (честно)
-2. Два варианта как можно действовать
-3. Что сказать — конкретная фраза для начала разговора
-
-Будь прямым, не давай банальных советов.""")
-    await message.answer(f"❤️ *Социальный навигатор*\n\n{response}", parse_mode="Markdown")
-
-@dp.message(Command("goals"))
-async def cmd_goals(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        profile = get_profile(message.from_user.id)
-        await message.answer(f"🎯 Текущие цели: {', '.join(profile['goals'])}\n\nОбновить:\n/goals HSK 4, блог 1000 подписчиков, поездка в Казахстан")
-        return
-    goals_raw = args[1].strip()
-    goals = [g.strip() for g in goals_raw.split(",")]
-    update_profile(message.from_user.id, goals=goals)
-    await message.answer(f"🎯 Цели обновлены:\n" + "\n".join([f"• {g}" for g in goals]))
-
-# ─── FREE CHAT ───────────────────────────────────────────────────────────────
+        
+    save_message(user_id, "user", f"[Голос]: {text_input}")
+    reply = await run_agent(user_id, text_input)
+    save_message(user_id, "assistant", reply)
+    await message.answer(f"🗣 *Распознано:* _{text_input}_\n\n{reply}", parse_mode="Markdown")
 
 @dp.message(F.text)
-async def free_chat(message: Message):
+async def handle_text(message: Message):
     user_id = message.from_user.id
-    profile = get_profile(user_id)
-    history = get_history(user_id, limit=8)
-    prompt = build_system_prompt(profile)
-
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    
     save_message(user_id, "user", message.text)
-    response = await ask_gemini(prompt, message.text, history)
-    save_message(user_id, "model", response)
+    reply = await run_agent(user_id, message.text)
+    save_message(user_id, "assistant", reply)
+    await message.answer(reply, parse_mode="Markdown")
 
-    await message.answer(response)
-
-# ─── SCHEDULER ───────────────────────────────────────────────────────────────
-
-async def schedule_morning_briefings():
-    conn = sqlite3.connect("lifepilot.db")
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM profile")
-    users = c.fetchall()
-    conn.close()
-    for (user_id,) in users:
-        try:
-            await send_morning_briefing(user_id)
-        except Exception as e:
-            logger.error(f"Morning briefing error for {user_id}: {e}")
-
-# ─── MAIN ────────────────────────────────────────────────────────────────────
+# ─── INIT ────────────────────────────────────────────────────────────────────
 
 async def main():
     init_db()
-    scheduler.add_job(schedule_morning_briefings, "cron", hour=8, minute=0, timezone="Asia/Shanghai")
-    scheduler.start()
-    logger.info("LifePilot started!")
+    logger.info("Джарвис готов к работе без команд.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
