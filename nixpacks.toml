@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["libxcb", "libGL"]
+nixPkgs = ["...", "python311", "ffmpeg"]
 
 [phases.install]
-cmds = [
-  "pip uninstall -y opencv-python opencv-contrib-python || true",
-  "pip install opencv-python-headless"
-]
+cmds = ["python -m venv /opt/venv", ". /opt/venv/bin/activate", "pip install -r requirements.txt"]
+
+[start]
+cmd = ". /opt/venv/bin/activate && python main.py"
