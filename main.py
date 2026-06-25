@@ -41,7 +41,7 @@ GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 GROQ_MODEL_TEXT = "llama-3.3-70b-versatile"
 GROQ_MODEL_FAST = "llama-3.1-8b-instant"
-GROQ_MODEL_VISION = "llama-3.2-11b-vision-preview"
+GROQ_MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 GROQ_MODEL_ASR = "whisper-large-v3"
 
 VOICE_NAME = "ru-RU-DmitryNeural"
