@@ -23,6 +23,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from docx import Document as DocxDocument
 from pypdf import PdfReader
@@ -35,6 +36,8 @@ from pypdf import PdfReader
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 QWEATHER_KEY = os.environ.get("QWEATHER_KEY")
+JARVIS_API_KEY = os.environ.get("JARVIS_API_KEY")  # секрет для /jarvis HTTP endpoint (MacroDroid)
+JARVIS_HTTP_USER_ID = int(os.environ.get("JARVIS_HTTP_USER_ID", "0"))  # твой Telegram user_id, чтобы шарить память/задачи
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -1356,28 +1359,33 @@ async def cb_remind(callback: CallbackQuery) -> None:
 # TEXT / CHAT
 # =========================
 
-async def process_user_text(message: Message, text: str) -> None:
-    user_id = message.from_user.id
-    settings = await get_settings(user_id)
-
+async def generate_jarvis_reply(user_id: int, text: str) -> Optional[str]:
+    """
+    Ядро логики Jarvis: принимает user_id и текст, возвращает текст ответа
+    (или None, если это был "быстрый интент" без ответа, например /remember).
+    Не зависит от Telegram — используется и ботом, и HTTP /jarvis эндпоинтом.
+    """
+    await ensure_user(user_id)
     text = normalize_text(text)
     if not text:
-        return
+        return None
 
     # quick intents
     if text.lower().startswith("запомни "):
         content = text.split(" ", 1)[1].strip()
         if content:
             mid = await add_memory(user_id, content)
-            await message.answer(f"Запомнил. ID памяти: {mid}")
-            return
+            return f"Запомнил. ID памяти: {mid}"
+        return None
 
     if text.lower().startswith("заметка "):
         content = text.split(" ", 1)[1].strip()
         if content:
             nid = await add_note(user_id, title=content[:40], content=content)
-            await message.answer(f"Заметка сохранена. ID: {nid}")
-            return
+            return f"Заметка сохранена. ID: {nid}"
+        return None
+
+    settings = await get_settings(user_id)
 
     # save user message
     await save_message(user_id, "user", text)
@@ -1396,6 +1404,17 @@ async def process_user_text(message: Message, text: str) -> None:
         answer = "Пока не смог сформировать ответ."
 
     await save_message(user_id, "assistant", answer)
+    return answer
+
+
+async def process_user_text(message: Message, text: str) -> None:
+    user_id = message.from_user.id
+    settings = await get_settings(user_id)
+
+    answer = await generate_jarvis_reply(user_id, text)
+    if answer is None:
+        return
+
     await send_text_and_optional_voice(message, answer, settings)
 
 
@@ -1535,6 +1554,80 @@ async def briefing_job() -> None:
 
 
 # =========================
+# HTTP API (для MacroDroid / любого внешнего клиента)
+# =========================
+#
+# Один простой endpoint: POST /jarvis с JSON {"text": "..."}.
+# MacroDroid сам распознаёт речь в текст (Android STT) и сам озвучивает
+# полученный ответ (Android TTS) — поэтому сюда гоняется только текст,
+# никакого аудио по сети передавать не нужно. Это резко проще и быстрее.
+#
+# Защита простым статическим ключом через заголовок X-API-Key.
+# Если JARVIS_API_KEY не задан в переменных окружения — endpoint выключен
+# (чтобы случайно не оставить сервер открытым всему интернету).
+
+async def handle_jarvis_request(request: web.Request) -> web.Response:
+    if not JARVIS_API_KEY:
+        return web.json_response(
+            {"error": "JARVIS_API_KEY не задан на сервере — HTTP API выключен."},
+            status=503,
+        )
+
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key != JARVIS_API_KEY:
+        return web.json_response({"error": "unauthorized"}, status=401)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "поле 'text' пустое или отсутствует"}, status=400)
+
+    user_id = JARVIS_HTTP_USER_ID
+    if not user_id:
+        return web.json_response(
+            {"error": "JARVIS_HTTP_USER_ID не задан на сервере."},
+            status=503,
+        )
+
+    try:
+        answer = await generate_jarvis_reply(user_id, text)
+    except Exception as e:
+        logger.exception("HTTP /jarvis error: %s", e)
+        return web.json_response({"error": "internal error"}, status=500)
+
+    if answer is None:
+        answer = "Готово."
+
+    return web.json_response({"reply": answer})
+
+
+async def handle_health(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok"})
+
+
+def build_http_app() -> web.Application:
+    app = web.Application()
+    app.router.add_post("/jarvis", handle_jarvis_request)
+    app.router.add_get("/health", handle_health)
+    return app
+
+
+async def start_http_server() -> web.AppRunner:
+    port = int(os.environ.get("PORT", "8080"))
+    app = build_http_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+    logger.info("HTTP API запущен на порту %s (/jarvis, /health).", port)
+    return runner
+
+
+# =========================
 # STARTUP / SHUTDOWN
 # =========================
 
@@ -1562,9 +1655,11 @@ async def on_shutdown() -> None:
 
 async def main() -> None:
     await on_startup()
+    http_runner = await start_http_server()
     try:
         await dp.start_polling(bot)
     finally:
+        await http_runner.cleanup()
         await on_shutdown()
 
 
