@@ -1,13 +1,7 @@
 aiogram
-edge-tts
 aiohttp
-apscheduler
-python-docx
+edge-tts
+APScheduler
 openpyxl
+python-docx
 pypdf
-transformers
-torch
-sentence-transformers
-faiss-cpu
-numpy
-opencv-python-headless
