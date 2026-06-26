@@ -301,7 +301,7 @@ async def save_message(user_id: int, role: str, content: str) -> None:
     )
 
 
-async def get_recent_messages(user_id: int, limit: int = 12) -> List[Dict[str, str]]:
+async def get_recent_messages(user_id: int, limit: int = 6) -> List[Dict[str, str]]:
     rows = await db_query(
         """
         SELECT role, content
@@ -648,7 +648,7 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def parse_time_hhmm(value: str) -> Optional[tuple[int, int]]:
+def parse_time_hhmm(value: str) -> Optional[tuple]:
     m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", value.strip())
     if not m:
         return None
@@ -742,16 +742,24 @@ async def groq_chat(messages: List[Dict[str, Any]], model: str, temperature: flo
         "temperature": temperature,
     }
 
-    async with session.post(GROQ_CHAT_URL, headers=headers, json=payload) as resp:
-        data = await resp.json(content_type=None)
-        if resp.status >= 400:
-            logger.error("Groq error %s: %s", resp.status, data)
-            return f"Ошибка Groq API: {data}"
-        try:
-            return data["choices"][0]["message"]["content"].strip()
-        except Exception:
-            logger.error("Unexpected Groq response: %s", data)
-            return "Не удалось разобрать ответ модели."
+    for attempt in range(3):
+        async with session.post(GROQ_CHAT_URL, headers=headers, json=payload) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status == 429:
+                wait = 20 * (attempt + 1)
+                logger.warning("Rate limit, жду %s сек (попытка %s)...", wait, attempt + 1)
+                await asyncio.sleep(wait)
+                continue
+            if resp.status >= 400:
+                logger.error("Groq error %s: %s", resp.status, data)
+                return f"Ошибка Groq API: {data}"
+            try:
+                return data["choices"][0]["message"]["content"].strip()
+            except Exception:
+                logger.error("Unexpected Groq response: %s", data)
+                return "Не удалось разобрать ответ модели."
+
+    return "Groq API временно недоступен, попробуй чуть позже."
 
 
 async def groq_transcribe(audio_bytes: bytes, filename: str = "voice.ogg") -> Optional[str]:
@@ -860,7 +868,7 @@ def semantic_search_sync(query: str, items: List[Dict[str, Any]], top_k: int = 5
     return scored[:top_k]
 
 
-async def search_knowledge(query: str, user_id: int, top_k: int = 5, scope: str = "all") -> List[Dict[str, Any]]:
+async def search_knowledge(query: str, user_id: int, top_k: int = 3, scope: str = "all") -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
 
     if scope in {"all", "memory"}:
@@ -1304,7 +1312,7 @@ async def build_proactive_advice(user_id: int) -> Optional[str]:
 
 async def build_system_prompt(user_id: int, query: str) -> str:
     settings = await get_settings(user_id)
-    relevant = await search_knowledge(query, user_id, top_k=6, scope="all")
+    relevant = await search_knowledge(query, user_id, top_k=3, scope="all")
 
     relevant_lines = []
     for item in relevant:
@@ -1312,7 +1320,7 @@ async def build_system_prompt(user_id: int, query: str) -> str:
 
     context_block = "\n".join(relevant_lines) if relevant_lines else "Нет релевантного контекста."
 
-    tasks = await get_tasks(user_id, status="open", limit=7)
+    tasks = await get_tasks(user_id, status="open", limit=5)
     task_block = "\n".join([f"- #{t['id']}: {t['text']}" for t in tasks]) if tasks else "Нет открытых задач."
 
     health_block = await build_health_summary(user_id)
@@ -1527,7 +1535,26 @@ def parse_task_with_deadline(text: str) -> Optional[Dict[str, Any]]:
     return {"task_text": task_text, "due": due}
 
 
-def detect_translation_request(text: str) -> Optional[tuple[str, str]]:
+def parse_reminder_input(raw: str) -> Optional[Dict[str, Any]]:
+    raw = raw.strip()
+    parts = raw.split(None, 1)
+    if len(parts) < 2:
+        return None
+
+    due = parse_due_from_text(parts[0])
+    if due:
+        return {"due": due, "text": parts[1].strip()}
+
+    parts2 = raw.split(None, 2)
+    if len(parts2) >= 3:
+        due = parse_due_from_text(f"{parts2[0]} {parts2[1]}")
+        if due:
+            return {"due": due, "text": parts2[2].strip()}
+
+    return None
+
+
+def detect_translation_request(text: str) -> Optional[tuple]:
     t = text.strip()
 
     m = re.match(r"^(?:переведи|translate)\s+на\s+([^\:]+?)\s*[:\-]\s*(.+)$", t, re.I)
@@ -1579,7 +1606,8 @@ async def execute_confirmed_action(action_type: str, payload: Dict[str, Any], us
 
     if action_type == "set_briefing":
         await set_setting(user_id, "briefing_enabled", int(payload["value"]))
-        return f"Briefing: {'ON' if int(payload["value"]) else 'OFF'}"
+        val = int(payload["value"])
+        return f"Briefing: {'ON' if val else 'OFF'}"
 
     return "Готово."
 
@@ -1771,7 +1799,7 @@ async def generate_jarvis_reply(user_id: int, text: str, save_user_message: bool
 
     settings = await get_settings(user_id)
     system_prompt = await build_system_prompt(user_id, text)
-    history = await get_recent_messages(user_id, limit=12)
+    history = await get_recent_messages(user_id, limit=6)
     model = select_model(settings)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -1803,9 +1831,11 @@ async def process_user_text(message: Message, text: str) -> None:
     if answer is None:
         return
 
-    proactive = await build_proactive_advice(user_id)
-    if proactive:
-        answer = f"{answer}\n\n{proactive}"
+    # Не показываем proactive advice если пришла ошибка от Groq
+    if not answer.startswith("Ошибка Groq") and not answer.startswith("Groq API временно"):
+        proactive = await build_proactive_advice(user_id)
+        if proactive:
+            answer = f"{answer}\n\n{proactive}"
 
     await send_text_and_optional_voice(message, answer, settings)
 
