@@ -2845,11 +2845,37 @@ async def cmd_threat(message: Message, command: CommandObject) -> None:
 @router.message(Command("winprob"))
 async def cmd_winprob(message: Message, command: CommandObject) -> None:
     raw = (command.args or "").strip()
-    if not raw or "->" not in raw:
-        await message.answer("Формат: /winprob мои сильные стороны -> слабости противника")
+
+    if not raw:
+        await message.answer(
+            "Отправь: сильные стороны и слабости противника.\n"
+            "Можно так:\n"
+            "/winprob я сильный в Python -> он слаб в опыте\n"
+            "или просто:\n"
+            "/winprob я сильный в Python противник слаб в опыте"
+        )
         return
-    parts = raw.split("->", 1)
-    result = await calculate_win_probability(parts[0].strip(), parts[1].strip())
+
+    # пробуем разные разделители
+    if "->" in raw:
+        left, right = raw.split("->", 1)
+    elif "против" in raw:
+        left, right = raw.split("против", 1)
+    else:
+        # fallback: делим пополам
+        words = raw.split()
+        mid = len(words) // 2
+        left = " ".join(words[:mid])
+        right = " ".join(words[mid:])
+
+    left = left.strip()
+    right = right.strip()
+
+    if not left or not right:
+        await message.answer("Не удалось разобрать данные. Попробуй переформулировать.")
+        return
+
+    result = await calculate_win_probability(left, right)
     await message.answer(result)
 
 
