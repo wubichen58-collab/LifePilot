@@ -2674,12 +2674,30 @@ async def cmd_remember(message: Message, command: CommandObject) -> None:
 
 
 @router.message(Command("memory"))
-async def cmd_memory(message: Message) -> None:
-    rows = await get_memories(message.from_user.id, limit=20)
-    if not rows:
-        await message.answer("Память пуста.")
+async def cmd_memory(message: Message):
+   
+    cursor.execute("SELECT id, content FROM memory ORDER BY id DESC LIMIT 30")
+    rows = cursor.fetchall()
+    
+    rows = list(reversed(rows))
+    
+  
+    rows_data = [f"• #{r['id']} {r['content']}" for r in rows]
+    
+    if not rows_data:
+        await message.answer("🧠 Память пуста.")
         return
-    await message.answer("🧠 Память:\n" + "\n".join([f"• #{r['id']} {r['content']}" for r in rows]))
+
+    current_chunk = "🧠 Память (последние 30 записей):\n"
+    for line in rows_data:
+      
+        if len(current_chunk) + len(line) + 1 > 4000:
+            await message.answer(current_chunk)
+            current_chunk = ""
+        current_chunk += line + "\n"
+    
+    if current_chunk:
+        await message.answer(current_chunk)
 
 
 @router.message(Command("forget"))
