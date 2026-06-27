@@ -2675,22 +2675,24 @@ async def cmd_remember(message: Message, command: CommandObject) -> None:
 
 @router.message(Command("memory"))
 async def cmd_memory(message: Message):
-   
-    cursor.execute("SELECT id, content FROM memory ORDER BY id DESC LIMIT 30")
-    rows = cursor.fetchall()
+    user_id = message.from_user.id
     
-    rows = list(reversed(rows))
+    # Используем готовую функцию вашего бота для получения последних 30 записей
+    rows = await get_memories(user_id, limit=30)
     
-  
-    rows_data = [f"• #{r['id']} {r['content']}" for r in rows]
-    
-    if not rows_data:
+    if not rows:
         await message.answer("🧠 Память пуста.")
         return
 
+    # Разворачиваем список, чтобы записи шли в хронологическом порядке (от старых к новым)
+    rows = list(reversed(rows))
+    
+    # Собираем строки для отправки
+    rows_data = [f"• #{r['id']} {r['content']}" for r in rows]
+
     current_chunk = "🧠 Память (последние 30 записей):\n"
     for line in rows_data:
-      
+        # Проверяем лимит Telegram на длину сообщения (4096 символов)
         if len(current_chunk) + len(line) + 1 > 4000:
             await message.answer(current_chunk)
             current_chunk = ""
@@ -2698,7 +2700,6 @@ async def cmd_memory(message: Message):
     
     if current_chunk:
         await message.answer(current_chunk)
-
 
 @router.message(Command("forget"))
 async def cmd_forget(message: Message, command: CommandObject) -> None:
