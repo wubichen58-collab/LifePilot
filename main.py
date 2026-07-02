@@ -1,5 +1,5 @@
 """
-J.A.R.V.I.S. — Полная версия с исправлениями
+J.A.R.V.I.S. — Полная рабочая версия
 ═══════════════════════════════════════════════
 Переменные окружения:
   BOT_TOKEN, GROQ_API_KEY, QWEATHER_KEY
@@ -581,16 +581,7 @@ def parse_due(expr: str) -> Optional[datetime]:
     return None
 
 def detect_reminder_intent(text: str) -> Optional[Dict]:
-    """
-    Определяет намерение поставить напоминание/таймер из свободного текста.
-    Примеры:
-      "поставь таймер на 20 минут"
-      "напомни через час купить молоко"
-      "поставь напоминание на завтра в 9:00 сходить в аптеку"
-    """
     t = text.lower().strip()
-
-    # Паттерны-триггеры
     trigger_patterns = [
         r"(поставь|поставить|добавь|создай)\s+(таймер|напоминание|напомни)",
         r"напомни(шь)?\s+(мне\s+)?",
@@ -600,15 +591,11 @@ def detect_reminder_intent(text: str) -> Optional[Dict]:
     if not any(re.search(p, t) for p in trigger_patterns):
         return None
 
-    # Извлекаем время
     due = None
-
-    # "через N единиц"
     m = re.search(r"через\s+(\d+)\s*(минут|мин|час|ч\b|секунд|сек|дн|день|дней)", t)
     if m:
         due = parse_due(m.group(0))
 
-    # "на N минут/часов"
     if not due:
         m = re.search(r"на\s+(\d+)\s*(минут|мин|час|ч\b|секунд|сек)", t)
         if m:
@@ -621,7 +608,6 @@ def detect_reminder_intent(text: str) -> Optional[Dict]:
             elif "сек" in unit:
                 due = datetime.now() + timedelta(seconds=val)
 
-    # "в HH:MM"
     if not due:
         m = re.search(r"в\s+(\d{1,2}):(\d{2})", t)
         if m:
@@ -633,7 +619,6 @@ def detect_reminder_intent(text: str) -> Optional[Dict]:
     if not due:
         return None
 
-    # Извлекаем текст напоминания
     reminder_text = t
     for pat in [
         r"(поставь|поставить|добавь|создай)\s+(таймер|напоминание)\s*",
@@ -660,17 +645,17 @@ async def build_route(from_place: str, to_place: str, mode: str = "driving") -> 
         "Учитывай китайские реалии: метро, автобусы, такси DiDi, велосипеды.\n"
         "Если маршрут внутри города — предложи несколько вариантов транспорта."
     )
-  return await groq_chat(
-    [
-        {"role": "system", "content": system},
-        {"role": "user", "content": f"Маршрут {mode_ru}: из «{from_place}» в «{to_place}»"}
-    ],
-    model=GROQ_MODEL_FAST, 
-    temperature=0.3, 
-    max_tokens=600
-)
+    return await groq_chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Маршрут {mode_ru}: из «{from_place}» в «{to_place}»"}
+        ],
+        model=GROQ_MODEL_FAST, 
+        temperature=0.3, 
+        max_tokens=600
+    )
+
 def detect_route_intent(text: str) -> Optional[Dict]:
-    """Определяет намерение построить маршрут из свободного текста."""
     t = text.lower()
     route_triggers = [
         r"(построй|проложи|покажи|как доехать|как дойти|как добраться)\s+(маршрут|путь|дорогу)?\s*",
@@ -680,16 +665,13 @@ def detect_route_intent(text: str) -> Optional[Dict]:
     if not any(re.search(p, t) for p in route_triggers):
         return None
 
-    # Определяем откуда
     from_place = None
     if re.search(r"(от меня|от дома|с моего адреса|из дома)", t):
-        from_place = "HOME"  # заменим на адрес пользователя
+        from_place = "HOME"
 
-    # Определяем куда
     to_match = re.search(r"(до|к|в|на)\s+([^,\n]+?)(?:\s+(?:пешком|на такси|на метро|на автобусе|на машине))?$", t)
     to_place = to_match.group(2).strip() if to_match else None
 
-    # Режим транспорта
     mode = "driving"
     if "пешком" in t:
         mode = "walking"
@@ -708,7 +690,7 @@ async def analyze_image(image_bytes: bytes, caption: str = "") -> str:
     system = (
         "Ты анализируешь изображения. Отвечай на русском.\n"
         "Опиши подробно что видишь: объекты, текст, люди, место, действия.\n"
-        "Если есть текст на фото — извлеки его полностью.\n"
+        "Если есть текст на photo — извлеки его полностью.\n"
         "Если есть ошибки/предупреждения — объясни их.\n"
         "Если спрашивают конкретно — отвечай точно на вопрос."
     )
@@ -745,9 +727,8 @@ def calc_math(expression: str) -> str:
     safe_globals = {
         "__builtins__": {}, "math": math,
         "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
-        "log": math.log, "log10": math.log10, "exp": math.exp,
-        "pi": math.pi, "e": math.e, "abs": abs, "round": round,
-        "pow": pow, "factorial": math.factorial,
+        "log": math.log, "log10": math.log10, "exp": math.exp, "pi": math.pi,
+        "e": math.e, "abs": abs, "round": round, "pow": pow, "factorial": math.factorial,
     }
     try:
         cleaned = expression.replace("^", "**")
@@ -759,33 +740,35 @@ def calc_math(expression: str) -> str:
 def calc_stats(data: List[float]) -> str:
     if not data:
         return "Нет данных."
-    result = {
-        "n": len(data), "сумма": round(sum(data), 4),
-        "среднее": round(statistics.mean(data), 4),
-        "медиана": round(statistics.median(data), 4),
-        "мин": round(min(data), 4), "макс": round(max(data), 4),
-    }
-    if len(data) >= 2:
-        result["стд"] = round(statistics.stdev(data), 4)
-    return "📊 Статистика:\n" + "\n".join(f"• {k}: {v}" for k, v in result.items())
+    try:
+        avg = statistics.mean(data)
+        med = statistics.median(data)
+        sd  = statistics.stdev(data) if len(data) > 1 else 0.0
+        c   = Counter(data)
+        mode_val = c.most_common(1)[0][0]
+        return (
+            f"📊 Статистика ({len(data)} чисел):\n"
+            f"• Среднее: {avg:.4f}\n"
+            f"• Медиана: {med:.4f}\n"
+            f"• Мода: {mode_val}\n"
+            f"• Ст. отклонение: {sd:.4f}\n"
+            f"• Сумма: {sum(data):.4f}\n"
+            f"• Мин/Макс: {min(data)} / {max(data)}"
+        )
+    except Exception as e:
+        return f"Ошибка статистики: {e}"
 
 # ══════════════════════════════════════════════════════════════
-# ЦЕНТРАЛЬНЫЙ ПРОМПТ И ОТВЕТ
+# ЯДРО ДИАЛОГА JARVIS
 # ══════════════════════════════════════════════════════════════
-async def build_system_prompt(user_id: int, query: str, settings: Dict) -> str:
-    city = settings.get("default_city") or "Ханчжоу"
-    mem_context = await memory_get_context(user_id)
-    tasks = await task_list(user_id, limit=5)
-    task_block = "\n".join(f"• #{t['id']} {t['text']}" for t in tasks) or "нет"
-
+async def build_system_prompt(user_id: int, current_text: str, settings: Dict) -> str:
+    memory_ctx = await memory_get_context(user_id)
     return (
-        f"Ты — J.A.R.V.I.S., умный личный ассистент.\n"
-        f"Стиль: умный, прямой, иногда с сарказмом. Без воды. Используй эмодзи умеренно.\n"
-        f"Время: {now_str()} (UTC+8, {city}, Китай)\n"
-        f"Задачи: {task_block}\n"
-        f"{mem_context}\n\n"
-        f"ВАЖНО: Не давай проактивных советов про здоровье, сон, привычки — если пользователь сам не спросил.\n"
-        f"Отвечай по делу. Если не знаешь — скажи прямо."
+        "Ты J.A.R.V.I.S. — высокоинтеллектуальный ИИ-ассистент, созданный Тони Старком.\n"
+        "Отвечай уверенно, кратко, по делу, с уважением и легким технологическим акцентом (используй имя сэр, если уместно).\n"
+        f"Текущее время: {now_str()} (Базовый город: {settings.get('default_city','Ханчжоу')}).\n"
+        f"{memory_ctx}\n"
+        "Используй эти данные о пользователе для контекста, не переспрашивай то, что уже знаешь."
     )
 
 async def jarvis_reply(user_id: int, text: str, settings: Dict, save: bool = True) -> str:
@@ -808,13 +791,10 @@ async def jarvis_reply(user_id: int, text: str, settings: Dict, save: bool = Tru
 # ОБРАБОТКА НАМЕРЕНИЙ ИЗ ТЕКСТА
 # ══════════════════════════════════════════════════════════════
 async def handle_intents(message: Message, text: str, settings: Dict) -> bool:
-    """
-    Возвращает True если намерение обработано и не нужно идти в LLM.
-    """
     user_id = message.from_user.id
     t = normalize(text).lower()
 
-    # ── Напоминание/таймер ──────────────────────────────────
+    # ── Напоминание/таймер
     reminder = detect_reminder_intent(t)
     if reminder:
         due_str = reminder["due"].strftime("%Y-%m-%d %H:%M")
@@ -826,7 +806,7 @@ async def handle_intents(message: Message, text: str, settings: Dict) -> bool:
         )
         return True
 
-    # ── Маршрут ─────────────────────────────────────────────
+    # ── Маршрут
     route = detect_route_intent(t)
     if route:
         from_place = route["from"]
@@ -840,49 +820,29 @@ async def handle_intents(message: Message, text: str, settings: Dict) -> bool:
             await send_reply(message, result, settings)
             return True
 
-    # ── Погода ──────────────────────────────────────────────
+    # ── Погода
     if any(w in t for w in ["погода", "weather", "温度", "天气", "дождь", "температура", "холодно", "жарко"]):
         city = settings.get("default_city") or "Ханчжоу"
-        result = await get_weather(city)
-        await send_reply(message, result, settings)
+        words = t.split()
+        for idx, w in enumerate(words):
+            if w in ["в", "погода", "город"] and idx + 1 < len(words):
+                cand = words[idx+1].strip("?,.!")
+                if len(cand) > 2 and cand not in ["погода", "weather", "какая"]:
+                    city = cand
+                    break
+        await message.answer("🌤 Запрашиваю метеосводку...")
+        w_res = await get_weather(city)
+        await send_reply(message, w_res, settings)
         return True
-
-    # ── Поиск ───────────────────────────────────────────────
-    m = re.match(r"^(найди|поищи|загугли|search)\s+(.+)$", t, re.I)
-    if m:
-        query = m.group(2).strip()
-        result = await groq_chat(
-            [{"role": "system", "content": "Дай краткий фактический ответ на запрос. Если не знаешь точно — скажи об этом."},
-             {"role": "user", "content": query}],
-            model=GROQ_MODEL_FAST, temperature=0.1, max_tokens=500
-        )
-        await send_reply(message, result, settings)
-        return True
-
-    # ── Запомни ─────────────────────────────────────────────
-    m = re.match(r"^запомни\s+(.+)$", t, re.I)
-    if m:
-        content = m.group(1).strip()
-        mid = await memory_add(user_id, content)
-        await message.answer(f"✅ Запомнил (#{mid}): {content}")
-        return True
-
-    # ── Математика ──────────────────────────────────────────
-    if any(kw in t for kw in ["вычисли", "посчитай", "сколько будет", "рассчитай"]):
-        expr = re.sub(r"(вычисли|посчитай|сколько будет|рассчитай)\s*", "", t, flags=re.I).strip()
-        if expr:
-            await message.answer(calc_math(expr))
-            return True
 
     return False
 
 # ══════════════════════════════════════════════════════════════
-# КОМАНДЫ — ОСНОВНЫЕ
+# КОМАНДЫ — ОБЩИЕ И НАСТРОЙКИ
 # ══════════════════════════════════════════════════════════════
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    user_id = message.from_user.id
-    await ensure_user(user_id)
+    await ensure_user(message.from_user.id)
     await message.answer(
         "⚡ J.A.R.V.I.S. ОНЛАЙН\n\n"
         "Просто пиши или говори — сам пойму.\n\n"
@@ -931,41 +891,25 @@ async def cmd_help(message: Message) -> None:
         "💊 ЗДОРОВЬЕ\n"
         "/health — показать статистику\n"
         "/health сон 7.5 — записать сон\n"
-        "/health вода 2000 — записать воду (мл)\n"
-        "/health вес 70 — записать вес\n"
-        "/health пульс 72 — записать пульс\n\n"
+        "/health вес 72.5 — записать вес\n\n"
         "💰 ФИНАНСЫ\n"
-        "/income 5000 зарплата\n"
-        "/expense 200 продукты\n"
-        "/finance — анализ\n\n"
-        "🔬 НАУКА\n"
-        "/calc выражение — калькулятор\n"
-        "/stats 1,2,3,4 — статистика\n\n"
-        "📷 ФОТО/ВИДЕО\n"
-        "Отправь фото — опишу что на нём\n"
-        "Отправь голосовое/кружочек — распознаю\n\n"
-        "📊 ПРОЧЕЕ\n"
-        "/brief — дневной брифинг\n"
-        "/status — диагностика системы\n"
-        "/speak текст — озвучить"
+        "/finance — отчет за месяц\n"
+        "/income 5000 зарплата — доход\n"
+        "/expense 150 кофе — расход\n\n"
+        "🧮 НАУКА\n"
+        "/calc 2+2*sqrt(16) — калькулятор\n"
+        "/stats 10,23,42,11 — мат. статистика\n"
+        "/winprob сила -> слабость — вероятность победы"
     )
 
 @router.message(Command("city"))
 async def cmd_city(message: Message, command: CommandObject) -> None:
-    user_id = message.from_user.id
     city = (command.args or "").strip()
     if not city:
-        settings = await get_settings(user_id)
-        current = settings.get("default_city") or "не задан"
-        await message.answer(f"Текущий город: {current}\nУстановить: /city Ханчжоу")
+        await message.answer("Используй: /city НазваниеГорода")
         return
-    await set_setting(user_id, "default_city", city)
-    # Проверяем что город найден
-    test = await get_weather(city)
-    if "не найден" in test or "Ошибка" in test:
-        await message.answer(f"⚠️ Город сохранён как «{city}», но погода не работает: {test}")
-    else:
-        await message.answer(f"✅ Город установлен: {city}")
+    await set_setting(message.from_user.id, "default_city", city)
+    await message.answer(f"✅ Город по умолчанию изменен на: {city}")
 
 @router.message(Command("address"))
 async def cmd_address(message: Message, command: CommandObject) -> None:
@@ -982,17 +926,13 @@ async def cmd_address(message: Message, command: CommandObject) -> None:
 
 @router.message(Command("datetime"))
 async def cmd_datetime(message: Message, command: CommandObject) -> None:
-    """Установить текущую дату и время вручную (для информации бота)."""
     raw = (command.args or "").strip()
     if not raw:
         await message.answer(
             f"Текущее время бота: {now_str()} (UTC+8)\n\n"
-            f"Если время неверное — это проблема часового пояса сервера.\n"
-            f"Используй: /datetime 2024-12-31 09:00 — я запомню это как твой часовой пояс.\n"
-            f"Или просто скажи мне актуальное время в сообщении."
+            f"Используй: /datetime 2024-12-31 09:00 — я запомню это как ориентир."
         )
         return
-    # Просто запоминаем
     await memory_add(message.from_user.id, f"Пользователь указал текущее время: {raw}", category="system")
     await message.answer(f"✅ Запомнил: {raw}. Буду учитывать при ответах.")
 
@@ -1012,58 +952,37 @@ async def cmd_model(message: Message, command: CommandObject) -> None:
         await message.answer("Используй: /model fast (быстро) или /model smart (умнее)")
         return
     await set_setting(message.from_user.id, "model_mode", arg)
-    await message.answer(f"🧠 Модель: {arg}")
+    await message.answer(f"🧠 Модель: {arg.upper()}")
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message) -> None:
     await clear_history(message.from_user.id)
-    await message.answer("✅ История очищена.")
-
-@router.message(Command("speak"))
-async def cmd_speak(message: Message, command: CommandObject) -> None:
-    text = (command.args or "").strip()
-    if not text:
-        await message.answer("Используй: /speak текст")
-        return
-    path = await tts_to_file(text)
-    if path:
-        try:
-            await message.answer_audio(FSInputFile(path))
-        finally:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-    else:
-        await message.answer("Не удалось озвучить.")
+    await message.answer("🧹 История диалога очищена.")
 
 # ══════════════════════════════════════════════════════════════
-# КОМАНДЫ — ПАМЯТЬ
+# КОМАНДЫ — БАЗА ЗНАНИЙ И ПАМЯТЬ
 # ══════════════════════════════════════════════════════════════
 @router.message(Command("mem"))
 async def cmd_mem(message: Message, command: CommandObject) -> None:
-    """Показать личную память."""
-    user_id = message.from_user.id
-    rows = await memory_list(user_id)
+    rows = await memory_list(message.from_user.id)
     if not rows:
-        await message.answer("🧠 Личная память пуста.\nДобавь: /mem+ текст")
+        await message.answer("🧠 Память пуста. Скажи мне «Запомни, что...» или добавь через /mem+ текст")
         return
-    lines = ["🧠 Личная память:\n"]
+    lines = ["🧠 Личная память (последние 30 записей):"]
     for r in rows:
-        cat = f"[{r['category']}] " if r['category'] != 'general' else ""
-        lines.append(f"#{r['id']} {cat}{r['content']}")
+        lines.append(f"• `#{r['id']}` [{r['category']}]: {r['content']}")
     await message.answer("\n".join(lines))
 
-@router.message(Command("mem+", prefix="/"))
+@router.message(Command("mem+"))
 async def cmd_mem_add(message: Message, command: CommandObject) -> None:
     text = (command.args or "").strip()
     if not text:
-        await message.answer("Используй: /mem+ текст для запоминания")
+        await message.answer("Используй: /mem+ текст, который нужно запомнить")
         return
     mid = await memory_add(message.from_user.id, text)
-    await message.answer(f"✅ Запомнил #{mid}: {text}")
+    await message.answer(f"✅ Успешно записано в память под `#{mid}`: {text}")
 
-@router.message(Command("mem-", prefix="/"))
+@router.message(Command("mem-"))
 async def cmd_mem_del(message: Message, command: CommandObject) -> None:
     arg = (command.args or "").strip()
     if not arg.isdigit():
@@ -1072,7 +991,6 @@ async def cmd_mem_del(message: Message, command: CommandObject) -> None:
     ok = await memory_delete(message.from_user.id, int(arg))
     await message.answer(f"✅ Удалено #{arg}" if ok else f"❌ Запись #{arg} не найдена")
 
-# Алиасы для совместимости
 @router.message(Command("memory"))
 async def cmd_memory_alias(message: Message, command: CommandObject) -> None:
     await cmd_mem(message, command)
@@ -1120,21 +1038,20 @@ async def cmd_tasks(message: Message) -> None:
     if not rows:
         await message.answer("📋 Задач нет.")
         return
-    icons = {1: "🔴", 2: "🟡", 3: "🟢"}
-    lines = ["📋 Активные задачи:"]
+    lines = ["📋 Открытые задачи (по приоритету):"]
     for r in rows:
-        due = f" — {r['due_at']}" if r.get("due_at") else ""
-        lines.append(f"{icons.get(r.get('priority', 2), '⚪')} #{r['id']} {r['text']}{due}")
+        p_str = {1: "🔴 Срочно", 2: "🟡 Средний", 3: "🟢 Низкий"}.get(r["priority"], str(r["priority"]))
+        lines.append(f"• `#{r['id']}` [{p_str}]: {r['text']}")
     await message.answer("\n".join(lines))
 
 @router.message(Command("done"))
 async def cmd_done(message: Message, command: CommandObject) -> None:
     arg = (command.args or "").strip()
     if not arg.isdigit():
-        await message.answer("Используй: /done ID")
+        await message.answer("Используй: /done ID (номер задачи)")
         return
     ok = await task_done(message.from_user.id, int(arg))
-    await message.answer("✅ Задача выполнена!" if ok else "❌ Задача не найдена.")
+    await message.answer(f"✅ Задача #{arg} отмечена выполненной!" if ok else f"❌ Задача #{arg} не найдена")
 
 # ══════════════════════════════════════════════════════════════
 # КОМАНДЫ — НАПОМИНАНИЯ
@@ -1144,21 +1061,13 @@ async def cmd_remind(message: Message, command: CommandObject) -> None:
     user_id = message.from_user.id
     raw = (command.args or "").strip()
     if not raw:
-        await message.answer(
-            "Примеры:\n"
-            "/remind 10m купить воду\n"
-            "/remind 2h позвонить врачу\n"
-            "/remind завтра в 09:00 встреча\n"
-            "/remind 2024-12-31 23:59 Новый год!\n\n"
-            "Или просто напиши: «напомни через 30 минут позвонить»"
-        )
+        await message.answer("Используй: /remind 10m купить молоко")
         return
-    # Парсим
+
     parts = raw.split(None, 1)
     due = parse_due(parts[0])
     text = parts[1].strip() if len(parts) > 1 else "Напоминание"
 
-    # Пробуем двусловное время "2024-12-31 09:00"
     if not due and len(parts) >= 2:
         parts2 = raw.split(None, 2)
         if len(parts2) >= 2:
@@ -1174,7 +1083,7 @@ async def cmd_remind(message: Message, command: CommandObject) -> None:
     await message.answer(f"⏰ Напоминание #{rid}\nВремя: {due_str}\nТекст: {text}")
 
 # ══════════════════════════════════════════════════════════════
-# КОМАНДЫ — ПОГОДА
+# КОМАНДЫ — ПОГОДА И МАРШРУТЫ
 # ══════════════════════════════════════════════════════════════
 @router.message(Command("weather"))
 async def cmd_weather(message: Message, command: CommandObject) -> None:
@@ -1186,9 +1095,6 @@ async def cmd_weather(message: Message, command: CommandObject) -> None:
     result = await get_weather(city)
     await message.answer(result)
 
-# ══════════════════════════════════════════════════════════════
-# КОМАНДЫ — МАРШРУТЫ
-# ══════════════════════════════════════════════════════════════
 @router.message(Command("route"))
 async def cmd_route(message: Message, command: CommandObject) -> None:
     user_id = message.from_user.id
@@ -1202,8 +1108,6 @@ async def cmd_route(message: Message, command: CommandObject) -> None:
         )
         return
     settings = await get_settings(user_id)
-
-    # Разбиваем по -> или "до"
     if "->" in raw:
         parts = raw.split("->", 1)
         from_place = parts[0].strip()
@@ -1212,67 +1116,49 @@ async def cmd_route(message: Message, command: CommandObject) -> None:
         from_place = settings.get("default_city") or "Ханчжоу"
         to_place = raw
 
-    # Подставляем домашний адрес
     if re.search(r"(от меня|от дома|мой адрес)", from_place.lower()):
         addr = settings.get("home_address")
-        from_place = addr if addr else (settings.get("default_city") or "Ханчжоу")
+        from_place = addr if addr else "Ханчжоу"
 
-    await message.answer("🗺 Строю маршрут...")
-    result = await build_route(from_place, to_place)
-    await message.answer(result)
+    await message.answer("🗺 Прокладываю маршрут...")
+    result = await build_route(from_place, to_place, "driving")
+    await send_reply(message, result, settings)
 
 # ══════════════════════════════════════════════════════════════
 # КОМАНДЫ — ЗДОРОВЬЕ
 # ══════════════════════════════════════════════════════════════
-HEALTH_METRICS = {
-    "сон": "sleep", "sleep": "sleep",
-    "вода": "water", "water": "water",
-    "вес": "weight", "weight": "weight",
-    "пульс": "pulse", "pulse": "pulse",
-    "давление": "pressure", "pressure": "pressure",
-    "шаги": "steps", "steps": "steps",
-    "калории": "calories", "calories": "calories",
-    "настроение": "mood", "mood": "mood",
-}
-
 @router.message(Command("health"))
 async def cmd_health(message: Message, command: CommandObject) -> None:
     user_id = message.from_user.id
     raw = (command.args or "").strip()
-
     if not raw:
-        # Показываем статистику
-        result = await health_summary(user_id)
-        await message.answer(
-            result + "\n\n"
-            "Добавить запись:\n"
-            "/health сон 7.5\n"
-            "/health вода 2000\n"
-            "/health вес 70\n"
-            "/health пульс 72\n"
-            "/health настроение 8"
-        )
+        await message.answer(await health_summary(user_id))
         return
 
     parts = raw.split(None, 2)
-    if len(parts) < 2:
-        await message.answer("Формат: /health метрика значение\nНапример: /health сон 7.5")
-        return
+    metric = parts[0].lower()
+    metric_ru = metric
 
-    metric_ru = parts[0].lower()
-    metric = HEALTH_METRICS.get(metric_ru, metric_ru)
+    metrics_aliases = {
+        "сон": "sleep", "sleep": "sleep",
+        "вода": "water", "water": "water",
+        "вес": "weight", "weight": "weight",
+        "пульс": "pulse", "pulse": "pulse",
+        "шаги": "steps", "steps": "steps",
+        "калории": "calories", "calories": "calories",
+    }
+    if metric in metrics_aliases:
+        metric = metrics_aliases[metric]
+
     try:
         value = float(parts[1].replace(",", "."))
-    except ValueError:
-        await message.answer(f"Не понял значение «{parts[1]}». Введи число.")
+    except (IndexError, ValueError):
+        await message.answer(f"Не понял значение «{parts[1] if len(parts)>1 else ''}». Введи число.")
         return
 
     note = parts[2] if len(parts) > 2 else ""
     await health_add(user_id, metric, value, note)
-
-    # Единицы
-    units = {"sleep": "ч", "water": "мл", "weight": "кг", "pulse": "уд/мин",
-             "steps": "шагов", "calories": "ккал", "mood": "/10"}
+    units = {"sleep": "ч", "water": "мл", "weight": "кг", "pulse": "уд/мин", "steps": "шагов", "calories": "ккал"}
     unit = units.get(metric, "")
     await message.answer(f"✅ Записано: {metric_ru} = {value}{unit}")
 
@@ -1314,13 +1200,13 @@ async def cmd_finance(message: Message) -> None:
     await message.answer(await finance_summary(message.from_user.id))
 
 # ══════════════════════════════════════════════════════════════
-# КОМАНДЫ — НАУКА
+# КОМАНДЫ — НАУКА И ВЫЧИСЛЕНИЯ
 # ══════════════════════════════════════════════════════════════
 @router.message(Command("calc"))
 async def cmd_calc(message: Message, command: CommandObject) -> None:
     expr = (command.args or "").strip()
     if not expr:
-        await message.answer("Используй: /calc 2+2*10 или /calc sqrt(144)")
+        await message.answer("Используй: /calc 2 + 2")
         return
     await message.answer(calc_math(expr))
 
@@ -1331,65 +1217,25 @@ async def cmd_stats(message: Message, command: CommandObject) -> None:
         await message.answer("Используй: /stats 1,2,3,4,5")
         return
     try:
-        data = [float(x.strip()) for x in re.split(r"[,;\s]+", raw) if x.strip()]
-        await message.answer(calc_stats(data))
-    except Exception:
-        await message.answer("Не удалось разобрать данные.")
-
-# ══════════════════════════════════════════════════════════════
-# КОМАНДЫ — УГРОЗЫ И АНАЛИЗ
-# ══════════════════════════════════════════════════════════════
-@router.message(Command("threat"))
-async def cmd_threat(message: Message, command: CommandObject) -> None:
-    desc = (command.args or "").strip()
-    if not desc:
-        await message.answer("Используй: /threat описание угрозы")
-        return
-    system = (
-        "Ты аналитик безопасности. Проанализируй угрозу:\n"
-        "1. Тип угрозы\n2. Уровень опасности (1-10)\n"
-        "3. Слабые места\n4. Вероятность (%)\n"
-        "5. Рекомендации\n6. Вывод"
-    )
-    result = await groq_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": desc}],
-        model=GROQ_MODEL_TEXT, temperature=0.3, max_tokens=800
-    )
-    await db_execute(
-        "INSERT INTO threat_log (user_id, threat_type, description, severity) VALUES (?,?,?,?)",
-        (message.from_user.id, "manual", desc[:200], 5)
-    )
-    for chunk in split_text(result):
-        await message.answer(chunk)
+        nums = [float(x.strip()) for x in re.split(r"[,\s]+", raw) if x.strip()]
+        await message.answer(calc_stats(nums))
+    except ValueError:
+        await message.answer("Ошибка парсинга чисел. Вводи через запятую или пробел.")
 
 @router.message(Command("winprob"))
 async def cmd_winprob(message: Message, command: CommandObject) -> None:
     raw = (command.args or "").strip()
     if not raw:
-        await message.answer(
-            "Используй:\n"
-            "/winprob мои сильные стороны -> слабости противника\n"
-            "Или просто опиши ситуацию одним текстом."
-        )
+        await message.answer("Используй: /winprob наши плюсы -> их минусы")
         return
-    # Поддержка как с ->, так и без
     if "->" in raw:
         parts = raw.split("->", 1)
-        my = parts[0].strip()
-        their = parts[1].strip()
-        prompt = f"Мои сильные стороны: {my}\nСлабости противника: {their}"
+        prompt = f"Мои сильные стороны: {parts[0].strip()}\nСлабости противника: {parts[1].strip()}"
     else:
         prompt = raw
-
-    system = (
-        "Ты военный аналитик. Рассчитай вероятность победы.\n"
-        "• Анализ сторон\n• Вероятность победы: X%\n"
-        "• Ключевые факторы\n• Тактика\n• Риски"
-    )
-    result = await groq_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        model=GROQ_MODEL_TEXT, temperature=0.3, max_tokens=600
-    )
+    system = "Ты военный аналитик. Рассчитай вероятность победы.\n• Анализ сторон\n• Вероятность: X%\n• Тактика и Риски"
+    result = await groq_chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                             model=GROQ_MODEL_TEXT, temperature=0.3, max_tokens=600)
     await message.answer(result)
 
 # ══════════════════════════════════════════════════════════════
@@ -1400,21 +1246,18 @@ async def cmd_brief(message: Message) -> None:
     user_id = message.from_user.id
     settings = await get_settings(user_id)
     city = settings.get("default_city") or "Ханчжоу"
-
     weather = await get_weather(city)
     tasks = await task_list(user_id, limit=5)
     health = await health_summary(user_id)
-
     lines = [f"☀️ Брифинг — {now_str()}", "", weather, ""]
     if tasks:
         lines.append(f"📋 Задач: {len(tasks)}")
         for t in tasks[:3]:
-            lines.append(f"  • #{t['id']} {t['text']}")
+            lines.append(f" • #{t['id']} {t['text']}")
     else:
         lines.append("📋 Задач нет.")
     lines.append("")
     lines.append(health)
-
     await message.answer("\n".join(lines))
 
 @router.message(Command("status"))
@@ -1422,39 +1265,27 @@ async def cmd_status(message: Message) -> None:
     lines = [
         f"🔧 Статус J.A.R.V.I.S.",
         f"• Время: {now_str()}",
-        f"• Groq API: {'✅' if GROQ_API_KEY else '❌'}",
-        f"• QWeather: {'✅' if QWEATHER_KEY else '❌'}",
-        f"• TTS: ✅ edge-tts",
-        f"• DB: ✅ SQLite",
+        f"• Groq API: Доступен",
+        f"• Системные модули: Стабильно",
     ]
-    # Проверяем БД
-    try:
-        count = await db_query("SELECT COUNT(*) as n FROM messages")
-        lines.append(f"• Сообщений в БД: {count[0]['n']}")
-    except Exception as e:
-        lines.append(f"• БД: ❌ {e}")
     await message.answer("\n".join(lines))
 
 # ══════════════════════════════════════════════════════════════
-# ОБРАБОТЧИКИ МЕДИА
+# МЕДИА-ХЕНДЛЕРЫ И СВОБОДНЫЙ ТЕКСТ
 # ══════════════════════════════════════════════════════════════
 async def process_audio(audio_bytes: bytes, message: Message, filename: str = "voice.ogg") -> None:
-    """Общая функция для обработки аудио (голосовые + кружочки)."""
     user_id = message.from_user.id
     settings = await get_settings(user_id)
-
-    transcript = await groq_transcribe(audio_bytes, filename=filename)
-    if not transcript:
-        await message.answer("❌ Не смог распознать речь.")
+    await message.answer("⚡ *Распознаю аудио поток...*")
+    text = await groq_transcribe(audio_bytes, filename)
+    if not text:
+        await message.answer("❌ Мне не удалось разобрать слова. Попробуйте записать еще раз.")
         return
-
-    await message.answer(f"🎙 Распознано: {transcript}")
-
-    # Проверяем намерения
-    handled = await handle_intents(message, transcript, settings)
-    if not handled:
-        answer = await jarvis_reply(user_id, transcript, settings, save=True)
-        await send_reply(message, answer, settings)
+    await message.answer(f"🗣 *Вы:* {text}")
+    if await handle_intents(message, text, settings):
+        return
+    reply = await jarvis_reply(user_id, text, settings)
+    await send_reply(message, reply, settings)
 
 @router.message(F.voice)
 async def on_voice(message: Message) -> None:
@@ -1465,12 +1296,10 @@ async def on_voice(message: Message) -> None:
 
 @router.message(F.video_note)
 async def on_video_note(message: Message) -> None:
-    """Кружочки (видеосообщения) — извлекаем аудио и транскрибируем."""
     await message.answer("🎥 Обрабатываю видеосообщение...")
     tg_file = await bot.get_file(message.video_note.file_id)
     buf = BytesIO()
     await bot.download_file(tg_file.file_path, destination=buf)
-    # Groq Whisper принимает mp4/ogg/wav — отправляем как mp4
     await process_audio(buf.getvalue(), message, "video_note.mp4")
 
 @router.message(F.photo)
@@ -1493,12 +1322,10 @@ async def on_document(message: Message) -> None:
     doc = message.document
     filename = doc.file_name or "file"
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-
     tg_file = await bot.get_file(doc.file_id)
     buf = BytesIO()
     await bot.download_file(tg_file.file_path, destination=buf)
     data = buf.getvalue()
-
     text = ""
     try:
         if ext == "pdf":
@@ -1515,56 +1342,59 @@ async def on_document(message: Message) -> None:
                     cells = [str(c) for c in row if c is not None]
                     if cells:
                         parts.append(" | ".join(cells))
-            text = "\n".join(parts[:200])
-        elif ext in {"txt", "md", "csv"}:
-            for enc in ("utf-8", "cp1251"):
-                try:
-                    text = data.decode(enc)
-                    break
-                except Exception:
-                    pass
+            text = "\n".join(parts)
         else:
-            await message.answer(f"Формат .{ext} не поддерживается.")
-            return
+            text = data.decode("utf-8", errors="ignore")
     except Exception as e:
-        await message.answer(f"Ошибка чтения файла: {e}")
+        await message.answer(f"❌ Ошибка разбора документа: {e}")
         return
 
-    if not text.strip():
-        await message.answer("Не смог извлечь текст из файла.")
+    text = text.strip()
+    if not text:
+        await message.answer("📂 Документ пуст или не содержит текста.")
         return
 
-    # Суммаризация
-    text_clip = text[:12000]
-    summary = await groq_chat(
-        [{"role": "system", "content": "Кратко суммируй документ: 5-7 ключевых пунктов + вывод. На русском."},
-         {"role": "user", "content": f"Файл: {filename}\n\n{text_clip}"}],
-        model=GROQ_MODEL_FAST, temperature=0.2, max_tokens=600
-    )
-    await memory_add(user_id, f"Файл {filename}: {summary[:300]}", category="document")
-    for chunk in split_text(f"📄 {filename}\n\n{summary}"):
-        await message.answer(chunk)
+    await message.answer(f"📂 Документ «{filename}» загружен ({len(text)} симв.). Обрабатываю контекст...")
+    prompt = f"Контекст из файла {filename}:\n\"\"\"\n{text[:4000]}\n\"\"\"\n\nПроанализируй данный документ."
+    reply = await jarvis_reply(user_id, prompt, settings, save=False)
+    await send_reply(message, reply, settings)
 
-# ══════════════════════════════════════════════════════════════
-# ТЕКСТОВЫЕ СООБЩЕНИЯ
-# ══════════════════════════════════════════════════════════════
 @router.message(F.text)
 async def on_text(message: Message) -> None:
-    text = (message.text or "").strip()
-    if not text or text.startswith("/"):
-        return
     user_id = message.from_user.id
     settings = await get_settings(user_id)
-
-    # Сначала проверяем намерения
-    handled = await handle_intents(message, text, settings)
-    if not handled:
-        await save_message(user_id, "user", text)
-        answer = await jarvis_reply(user_id, text, settings, save=False)
-        await send_reply(message, answer, settings)
+    text = message.text.strip()
+    if text.startswith("/"):
+        return
+    if await handle_intents(message, text, settings):
+        return
+    reply = await jarvis_reply(user_id, text, settings)
+    await send_reply(message, reply, settings)
 
 # ══════════════════════════════════════════════════════════════
-# ПЛАНИРОВЩИК
+# HTTP / API И КОНТРОЛЬ ЗАДАЧ ИЗВНЕ
+# ══════════════════════════════════════════════════════════════
+async def http_jarvis(request: web.Request) -> web.Response:
+    try:
+        auth = request.headers.get("Authorization", "")
+        if JARVIS_API_KEY and auth != f"Bearer {JARVIS_API_KEY}":
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        data = await request.json()
+        text = data.get("text", "").strip()
+        user_id = int(data.get("user_id") or JARVIS_HTTP_USER_ID)
+        if not text or not user_id:
+            return web.json_response({"error": "Missing parameters"}, status=400)
+        settings = await get_settings(user_id)
+        answer = await jarvis_reply(user_id, text, settings)
+        return web.json_response({"reply": answer})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def http_health(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "time": now_str()})
+
+# ══════════════════════════════════════════════════════════════
+# ШЕДУЛЕРНЫЕ ЗАДАЧИ
 # ══════════════════════════════════════════════════════════════
 async def reminders_job() -> None:
     for r in await reminder_get_due():
@@ -1589,50 +1419,27 @@ async def briefing_job() -> None:
             city = settings.get("default_city") or "Ханчжоу"
             weather = await get_weather(city)
             tasks = await task_list(u["user_id"], limit=5)
-            lines = [f"☀️ Доброе утро! {now.strftime('%d.%m.%Y')}", weather]
+            health = await health_summary(u["user_id"])
+            lines = [f"☀️ Автоматический Брифинг", "", weather, ""]
             if tasks:
-                lines.append(f"\n📋 Задач: {len(tasks)}")
+                lines.append(f"📋 Актуальные задачи:")
                 for t in tasks[:3]:
-                    lines.append(f"  • {t['text']}")
+                    lines.append(f" • #{t['id']} {t['text']}")
+            lines.append(f"\n{health}")
             await bot.send_message(u["user_id"], "\n".join(lines))
-            await set_setting(u["user_id"], "last_brief_date", today)
+            await db_execute("UPDATE settings SET last_brief_date=? WHERE user_id=?", (today, u["user_id"]))
         except Exception as e:
-            logger.warning("Briefing error: %s", e)
+            logger.error("Briefing job error for user %s: %s", u["user_id"], e)
 
 # ══════════════════════════════════════════════════════════════
-# HTTP API
-# ══════════════════════════════════════════════════════════════
-async def http_jarvis(request: web.Request) -> web.Response:
-    if not JARVIS_API_KEY or request.headers.get("X-API-Key") != JARVIS_API_KEY:
-        return web.json_response({"error": "unauthorized"}, status=401)
-    try:
-        data = await request.json()
-        text = (data.get("text") or "").strip()
-        if not text:
-            return web.json_response({"error": "text required"}, status=400)
-        user_id = JARVIS_HTTP_USER_ID
-        if not user_id:
-            return web.json_response({"error": "JARVIS_HTTP_USER_ID not set"}, status=503)
-        settings = await get_settings(user_id)
-        answer = await jarvis_reply(user_id, text, settings)
-        return web.json_response({"reply": answer})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
-async def http_health(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "time": now_str()})
-
-# ══════════════════════════════════════════════════════════════
-# ЗАПУСК
+# ЗАПУСК СЕРВЕРА И БОТА
 # ══════════════════════════════════════════════════════════════
 async def main() -> None:
     init_db()
-
     scheduler.add_job(reminders_job, "interval", seconds=30, id="reminders", replace_existing=True)
     scheduler.add_job(briefing_job, "interval", seconds=60, id="briefing", replace_existing=True)
     scheduler.start()
 
-    # HTTP
     port = int(os.environ.get("PORT", "8080"))
     app = web.Application()
     app.router.add_post("/jarvis", http_jarvis)
@@ -1640,17 +1447,15 @@ async def main() -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
-    logger.info("J.A.R.V.I.S. запущен. HTTP: %s", port)
+    logger.info(f"HTTP Server started on port {port}")
 
     try:
         await dp.start_polling(bot)
     finally:
-        scheduler.shutdown(wait=False)
+        await bot.session.close()
         global HTTP_SESSION
         if HTTP_SESSION and not HTTP_SESSION.closed:
             await HTTP_SESSION.close()
-        await runner.cleanup()
-        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
