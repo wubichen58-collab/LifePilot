@@ -660,12 +660,15 @@ async def build_route(from_place: str, to_place: str, mode: str = "driving") -> 
         "Учитывай китайские реалии: метро, автобусы, такси DiDi, велосипеды.\n"
         "Если маршрут внутри города — предложи несколько вариантов транспорта."
     )
-    return await groq_chat(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": f"Маршрут {mode_ru}: из «{from_place}» в «{to_place}}»"}],
-        model=GROQ_MODEL_FAST, temperature=0.3, max_tokens=600
-    )
-
+  return await groq_chat(
+    [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Маршрут {mode_ru}: из «{from_place}» в «{to_place}»"}
+    ],
+    model=GROQ_MODEL_FAST, 
+    temperature=0.3, 
+    max_tokens=600
+)
 def detect_route_intent(text: str) -> Optional[Dict]:
     """Определяет намерение построить маршрут из свободного текста."""
     t = text.lower()
